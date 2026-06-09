@@ -1,0 +1,15 @@
+[package]
+name = "yaml2"
+version = "0.0.0"
+edition = "2021"
+license = "MIT OR Apache-2.0"
+description = "A modern, YAML 1.2-compliant parser and emitter for Rust"
+repository = "https://github.com/USER/rust-yaml"
+categories = ["parser-implementations", "encoding"]
+keywords = ["yaml", "serde", "parser"]
+
+[dependencies]
+indexmap = "2"
+
+[lints.rust]
+unsafe_code = "forbid"
