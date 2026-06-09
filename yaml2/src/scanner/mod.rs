@@ -78,15 +78,27 @@ impl<'a> Scanner<'a> {
     /// Returns the next token, or `None` once the stream has ended.
     pub(crate) fn next_token(&mut self) -> Result<Option<Token>> {
         loop {
-            if let Some(token) = self.tokens.pop_front() {
+            if self.token_ready() {
+                let token = self.tokens.pop_front().expect("token_ready guarantees one");
                 self.tokens_parsed += 1;
                 return Ok(Some(token));
             }
-            if self.stream_end_produced {
+            if self.stream_end_produced && self.tokens.is_empty() {
                 return Ok(None);
             }
             self.fetch_more_tokens()?;
         }
+    }
+
+    /// A front token may be returned only when no buffered simple key could
+    /// still need to insert a `Key`/`BlockMappingStart` ahead of it.
+    fn token_ready(&self) -> bool {
+        if self.tokens.is_empty() {
+            return false;
+        }
+        // Hold the front token while a simple key is still buffered: the upcoming
+        // ':' may need to insert Key/BlockMappingStart ahead of it.
+        self.simple_key.is_none()
     }
 
     /// Produces one or more tokens into the queue.
@@ -118,6 +130,7 @@ impl<'a> Scanner<'a> {
         let start = self.reader.position();
         match self.reader.peek() {
             None => {
+                self.simple_key = None;
                 if self.flow_depth == 0 {
                     self.unroll_indent(-1);
                 }
@@ -127,6 +140,9 @@ impl<'a> Scanner<'a> {
                 Ok(())
             }
             Some(c) => {
+                if self.flow_depth == 0 && Self::can_start_simple_key(c) {
+                    self.save_simple_key(start);
+                }
                 let token = self.scan_content(c, start)?;
                 self.tokens.push_back(token);
                 Ok(())
@@ -139,8 +155,14 @@ impl<'a> Scanner<'a> {
     fn skip_to_next_token(&mut self) {
         loop {
             match self.reader.peek() {
-                Some(' ') | Some('\t') | Some('\n') | Some('\r') => {
+                Some(' ') | Some('\t') => {
                     self.reader.advance();
+                }
+                Some('\n') | Some('\r') => {
+                    self.reader.advance();
+                    if self.flow_depth == 0 {
+                        self.simple_key_allowed = true;
+                    }
                 }
                 Some('#') => {
                     while let Some(c) = self.reader.peek() {
@@ -180,7 +202,11 @@ impl<'a> Scanner<'a> {
             }
             ',' => Ok(self.single_char(TokenKind::FlowEntry, start)),
             ':' if self.flow_depth > 0 || self.indicator_terminator_next() => {
-                Ok(self.single_char(TokenKind::Value, start))
+                if self.flow_depth == 0 {
+                    self.fetch_block_value(start)
+                } else {
+                    Ok(self.single_char(TokenKind::Value, start))
+                }
             }
             '?' if self.indicator_terminator_next() => Ok(self.single_char(TokenKind::Key, start)),
             '\'' => self.scan_single_quoted(start),
@@ -193,6 +219,49 @@ impl<'a> Scanner<'a> {
             }
             _ => self.scan_plain(start),
         }
+    }
+
+    /// Records that a block-level node beginning at `mark` could be a mapping
+    /// key, if a simple key is currently allowed.
+    fn save_simple_key(&mut self, mark: Position) {
+        if self.flow_depth == 0 && self.simple_key_allowed {
+            self.simple_key = Some(SimpleKey {
+                token_number: self.tokens_parsed + self.tokens.len(),
+                mark,
+                line: mark.line,
+            });
+        }
+    }
+
+    /// Drops any buffered simple key.
+    fn remove_simple_key(&mut self) {
+        self.simple_key = None;
+    }
+
+    /// Whether `c` begins a node that could serve as a block mapping key
+    /// (scalar, anchor, alias, or tag — i.e. not a structural indicator).
+    fn can_start_simple_key(c: char) -> bool {
+        !matches!(c, '-' | '?' | ':' | ',' | '[' | ']' | '{' | '}' | '#')
+    }
+
+    /// Handles `:` in block context: converts a buffered simple key into a
+    /// `Key` token (opening a `BlockMappingStart` if needed) and emits `Value`.
+    fn fetch_block_value(&mut self, start: Position) -> Result<Token> {
+        if let Some(key) = self.simple_key.take() {
+            let index = key.token_number - self.tokens_parsed;
+            let mut at = index;
+            if self.roll_indent(Self::col0(key.mark), TokenKind::BlockMappingStart, key.mark, Some(at)) {
+                at += 1;
+            }
+            self.tokens
+                .insert(at, Token::new(TokenKind::Key, Span::new(key.mark, key.mark)));
+            self.simple_key_allowed = false;
+        } else {
+            self.roll_indent(Self::col0(start), TokenKind::BlockMappingStart, start, None);
+            self.simple_key_allowed = true;
+        }
+        self.reader.advance(); // consume ':'
+        Ok(Token::new(TokenKind::Value, Span::new(start, self.reader.position())))
     }
 
     /// Scans a single-line plain scalar in flow context.
@@ -586,13 +655,16 @@ mod tests {
 
     #[test]
     fn flow_entry_and_value_and_key() {
+        // In flow context `:` and `?` are indicators; here we test them there.
         assert_eq!(
-            kinds(", : ?"),
+            kinds("{, : ?}"),
             vec![
                 TokenKind::StreamStart,
+                TokenKind::FlowMappingStart,
                 TokenKind::FlowEntry,
                 TokenKind::Value,
                 TokenKind::Key,
+                TokenKind::FlowMappingEnd,
                 TokenKind::StreamEnd,
             ]
         );
@@ -762,10 +834,13 @@ mod tests {
 
     #[test]
     fn plain_scalar_terminated_by_value_indicator() {
+        // In block context `key: value` is a single-pair block mapping.
         assert_eq!(
             kinds("key: value"),
             vec![
                 TokenKind::StreamStart,
+                TokenKind::BlockMappingStart,
+                TokenKind::Key,
                 TokenKind::Scalar {
                     value: "key".to_string(),
                     style: ScalarStyle::Plain
@@ -775,6 +850,7 @@ mod tests {
                     value: "value".to_string(),
                     style: ScalarStyle::Plain
                 },
+                TokenKind::BlockEnd,
                 TokenKind::StreamEnd,
             ]
         );
@@ -821,16 +897,19 @@ mod tests {
 
     #[test]
     fn plain_scalar_trailing_colon_at_eof() {
-        // 'abc:' -> scalar "abc" then a Value token (':' at EOF is an indicator).
+        // 'abc:' -> block mapping: Key, scalar "abc", Value (no value scalar).
         assert_eq!(
             kinds("abc:"),
             vec![
                 TokenKind::StreamStart,
+                TokenKind::BlockMappingStart,
+                TokenKind::Key,
                 TokenKind::Scalar {
                     value: "abc".to_string(),
                     style: ScalarStyle::Plain
                 },
                 TokenKind::Value,
+                TokenKind::BlockEnd,
                 TokenKind::StreamEnd,
             ]
         );
@@ -1114,6 +1193,61 @@ mod tests {
                 TokenKind::BlockEntry,
                 TokenKind::Scalar { value: "a".to_string(), style: ScalarStyle::Plain },
                 TokenKind::BlockEnd,
+                TokenKind::BlockEnd,
+                TokenKind::StreamEnd,
+            ]
+        );
+    }
+
+    #[test]
+    fn simple_block_mapping() {
+        assert_eq!(
+            kinds("key: value\n"),
+            vec![
+                TokenKind::StreamStart,
+                TokenKind::BlockMappingStart,
+                TokenKind::Key,
+                TokenKind::Scalar { value: "key".to_string(), style: ScalarStyle::Plain },
+                TokenKind::Value,
+                TokenKind::Scalar { value: "value".to_string(), style: ScalarStyle::Plain },
+                TokenKind::BlockEnd,
+                TokenKind::StreamEnd,
+            ]
+        );
+    }
+
+    #[test]
+    fn two_pair_block_mapping() {
+        assert_eq!(
+            kinds("a: 1\nb: 2\n"),
+            vec![
+                TokenKind::StreamStart,
+                TokenKind::BlockMappingStart,
+                TokenKind::Key,
+                TokenKind::Scalar { value: "a".to_string(), style: ScalarStyle::Plain },
+                TokenKind::Value,
+                TokenKind::Scalar { value: "1".to_string(), style: ScalarStyle::Plain },
+                TokenKind::Key,
+                TokenKind::Scalar { value: "b".to_string(), style: ScalarStyle::Plain },
+                TokenKind::Value,
+                TokenKind::Scalar { value: "2".to_string(), style: ScalarStyle::Plain },
+                TokenKind::BlockEnd,
+                TokenKind::StreamEnd,
+            ]
+        );
+    }
+
+    #[test]
+    fn quoted_key_block_mapping() {
+        assert_eq!(
+            kinds("\"k\": v\n"),
+            vec![
+                TokenKind::StreamStart,
+                TokenKind::BlockMappingStart,
+                TokenKind::Key,
+                TokenKind::Scalar { value: "k".to_string(), style: ScalarStyle::DoubleQuoted },
+                TokenKind::Value,
+                TokenKind::Scalar { value: "v".to_string(), style: ScalarStyle::Plain },
                 TokenKind::BlockEnd,
                 TokenKind::StreamEnd,
             ]
