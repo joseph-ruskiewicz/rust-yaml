@@ -2,9 +2,9 @@
 
 mod error;
 mod event;
-mod parser;
 mod meta;
 mod options;
+mod parser;
 mod scalar;
 mod scanner;
 mod value;
