@@ -226,9 +226,7 @@ impl<'a> Scanner<'a> {
             '&' => self.scan_anchor_or_alias(start, true),
             '*' => self.scan_anchor_or_alias(start, false),
             '!' => Ok(self.scan_tag(start)),
-            '-' if self.flow_depth == 0 && self.block_entry_next() => {
-                self.fetch_block_entry(start)
-            }
+            '-' if self.flow_depth == 0 && self.block_entry_next() => self.fetch_block_entry(start),
             _ => self.scan_plain(start),
         }
     }
@@ -286,18 +284,28 @@ impl<'a> Scanner<'a> {
         if let Some(key) = self.simple_key.take() {
             let index = key.token_number - self.tokens_parsed;
             let mut at = index;
-            if self.roll_indent(Self::col0(key.mark), TokenKind::BlockMappingStart, key.mark, Some(at)) {
+            if self.roll_indent(
+                Self::col0(key.mark),
+                TokenKind::BlockMappingStart,
+                key.mark,
+                Some(at),
+            ) {
                 at += 1;
             }
-            self.tokens
-                .insert(at, Token::new(TokenKind::Key, Span::new(key.mark, key.mark)));
+            self.tokens.insert(
+                at,
+                Token::new(TokenKind::Key, Span::new(key.mark, key.mark)),
+            );
             self.simple_key_allowed = false;
         } else {
             self.roll_indent(Self::col0(start), TokenKind::BlockMappingStart, start, None);
             self.simple_key_allowed = true;
         }
         self.reader.advance(); // consume ':'
-        Ok(Token::new(TokenKind::Value, Span::new(start, self.reader.position())))
+        Ok(Token::new(
+            TokenKind::Value,
+            Span::new(start, self.reader.position()),
+        ))
     }
 
     /// Scans a single-line plain scalar in flow context.
@@ -585,7 +593,10 @@ impl<'a> Scanner<'a> {
             self.indents.push(self.indent);
             self.indent = col;
             if let Some(i) = at {
-                debug_assert!(i <= self.tokens.len(), "roll_indent insert index out of range");
+                debug_assert!(
+                    i <= self.tokens.len(),
+                    "roll_indent insert index out of range"
+                );
             }
             let token = Token::new(start_kind, Span::new(mark, mark));
             match at {
@@ -613,7 +624,10 @@ impl<'a> Scanner<'a> {
         self.roll_indent(col, TokenKind::BlockSequenceStart, start, None);
         self.reader.advance(); // consume '-'
         self.simple_key_allowed = true;
-        Ok(Token::new(TokenKind::BlockEntry, Span::new(start, self.reader.position())))
+        Ok(Token::new(
+            TokenKind::BlockEntry,
+            Span::new(start, self.reader.position()),
+        ))
     }
 
     /// True if the character after the current one is whitespace, a line break,
@@ -1188,7 +1202,10 @@ mod tests {
             kinds("hello"),
             vec![
                 TokenKind::StreamStart,
-                TokenKind::Scalar { value: "hello".to_string(), style: ScalarStyle::Plain },
+                TokenKind::Scalar {
+                    value: "hello".to_string(),
+                    style: ScalarStyle::Plain
+                },
                 TokenKind::StreamEnd,
             ]
         );
@@ -1208,9 +1225,15 @@ mod tests {
                 TokenKind::StreamStart,
                 TokenKind::BlockSequenceStart,
                 TokenKind::BlockEntry,
-                TokenKind::Scalar { value: "a".to_string(), style: ScalarStyle::Plain },
+                TokenKind::Scalar {
+                    value: "a".to_string(),
+                    style: ScalarStyle::Plain
+                },
                 TokenKind::BlockEntry,
-                TokenKind::Scalar { value: "b".to_string(), style: ScalarStyle::Plain },
+                TokenKind::Scalar {
+                    value: "b".to_string(),
+                    style: ScalarStyle::Plain
+                },
                 TokenKind::BlockEnd,
                 TokenKind::StreamEnd,
             ]
@@ -1227,7 +1250,10 @@ mod tests {
                 TokenKind::BlockEntry,
                 TokenKind::BlockSequenceStart,
                 TokenKind::BlockEntry,
-                TokenKind::Scalar { value: "a".to_string(), style: ScalarStyle::Plain },
+                TokenKind::Scalar {
+                    value: "a".to_string(),
+                    style: ScalarStyle::Plain
+                },
                 TokenKind::BlockEnd,
                 TokenKind::BlockEnd,
                 TokenKind::StreamEnd,
@@ -1243,9 +1269,15 @@ mod tests {
                 TokenKind::StreamStart,
                 TokenKind::BlockMappingStart,
                 TokenKind::Key,
-                TokenKind::Scalar { value: "key".to_string(), style: ScalarStyle::Plain },
+                TokenKind::Scalar {
+                    value: "key".to_string(),
+                    style: ScalarStyle::Plain
+                },
                 TokenKind::Value,
-                TokenKind::Scalar { value: "value".to_string(), style: ScalarStyle::Plain },
+                TokenKind::Scalar {
+                    value: "value".to_string(),
+                    style: ScalarStyle::Plain
+                },
                 TokenKind::BlockEnd,
                 TokenKind::StreamEnd,
             ]
@@ -1260,13 +1292,25 @@ mod tests {
                 TokenKind::StreamStart,
                 TokenKind::BlockMappingStart,
                 TokenKind::Key,
-                TokenKind::Scalar { value: "a".to_string(), style: ScalarStyle::Plain },
+                TokenKind::Scalar {
+                    value: "a".to_string(),
+                    style: ScalarStyle::Plain
+                },
                 TokenKind::Value,
-                TokenKind::Scalar { value: "1".to_string(), style: ScalarStyle::Plain },
+                TokenKind::Scalar {
+                    value: "1".to_string(),
+                    style: ScalarStyle::Plain
+                },
                 TokenKind::Key,
-                TokenKind::Scalar { value: "b".to_string(), style: ScalarStyle::Plain },
+                TokenKind::Scalar {
+                    value: "b".to_string(),
+                    style: ScalarStyle::Plain
+                },
                 TokenKind::Value,
-                TokenKind::Scalar { value: "2".to_string(), style: ScalarStyle::Plain },
+                TokenKind::Scalar {
+                    value: "2".to_string(),
+                    style: ScalarStyle::Plain
+                },
                 TokenKind::BlockEnd,
                 TokenKind::StreamEnd,
             ]
@@ -1281,9 +1325,15 @@ mod tests {
                 TokenKind::StreamStart,
                 TokenKind::BlockMappingStart,
                 TokenKind::Key,
-                TokenKind::Scalar { value: "k".to_string(), style: ScalarStyle::DoubleQuoted },
+                TokenKind::Scalar {
+                    value: "k".to_string(),
+                    style: ScalarStyle::DoubleQuoted
+                },
                 TokenKind::Value,
-                TokenKind::Scalar { value: "v".to_string(), style: ScalarStyle::Plain },
+                TokenKind::Scalar {
+                    value: "v".to_string(),
+                    style: ScalarStyle::Plain
+                },
                 TokenKind::BlockEnd,
                 TokenKind::StreamEnd,
             ]
@@ -1298,13 +1348,22 @@ mod tests {
                 TokenKind::StreamStart,
                 TokenKind::BlockMappingStart,
                 TokenKind::Key,
-                TokenKind::Scalar { value: "outer".to_string(), style: ScalarStyle::Plain },
+                TokenKind::Scalar {
+                    value: "outer".to_string(),
+                    style: ScalarStyle::Plain
+                },
                 TokenKind::Value,
                 TokenKind::BlockMappingStart,
                 TokenKind::Key,
-                TokenKind::Scalar { value: "inner".to_string(), style: ScalarStyle::Plain },
+                TokenKind::Scalar {
+                    value: "inner".to_string(),
+                    style: ScalarStyle::Plain
+                },
                 TokenKind::Value,
-                TokenKind::Scalar { value: "v".to_string(), style: ScalarStyle::Plain },
+                TokenKind::Scalar {
+                    value: "v".to_string(),
+                    style: ScalarStyle::Plain
+                },
                 TokenKind::BlockEnd,
                 TokenKind::BlockEnd,
                 TokenKind::StreamEnd,
@@ -1323,12 +1382,21 @@ mod tests {
                 TokenKind::StreamStart,
                 TokenKind::BlockMappingStart,
                 TokenKind::Key,
-                TokenKind::Scalar { value: "items".to_string(), style: ScalarStyle::Plain },
+                TokenKind::Scalar {
+                    value: "items".to_string(),
+                    style: ScalarStyle::Plain
+                },
                 TokenKind::Value,
                 TokenKind::BlockEntry,
-                TokenKind::Scalar { value: "a".to_string(), style: ScalarStyle::Plain },
+                TokenKind::Scalar {
+                    value: "a".to_string(),
+                    style: ScalarStyle::Plain
+                },
                 TokenKind::BlockEntry,
-                TokenKind::Scalar { value: "b".to_string(), style: ScalarStyle::Plain },
+                TokenKind::Scalar {
+                    value: "b".to_string(),
+                    style: ScalarStyle::Plain
+                },
                 TokenKind::BlockEnd,
                 TokenKind::StreamEnd,
             ]
@@ -1345,13 +1413,22 @@ mod tests {
                 TokenKind::StreamStart,
                 TokenKind::BlockMappingStart,
                 TokenKind::Key,
-                TokenKind::Scalar { value: "items".to_string(), style: ScalarStyle::Plain },
+                TokenKind::Scalar {
+                    value: "items".to_string(),
+                    style: ScalarStyle::Plain
+                },
                 TokenKind::Value,
                 TokenKind::BlockSequenceStart,
                 TokenKind::BlockEntry,
-                TokenKind::Scalar { value: "a".to_string(), style: ScalarStyle::Plain },
+                TokenKind::Scalar {
+                    value: "a".to_string(),
+                    style: ScalarStyle::Plain
+                },
                 TokenKind::BlockEntry,
-                TokenKind::Scalar { value: "b".to_string(), style: ScalarStyle::Plain },
+                TokenKind::Scalar {
+                    value: "b".to_string(),
+                    style: ScalarStyle::Plain
+                },
                 TokenKind::BlockEnd,
                 TokenKind::BlockEnd,
                 TokenKind::StreamEnd,
@@ -1369,9 +1446,15 @@ mod tests {
                 TokenKind::BlockEntry,
                 TokenKind::BlockMappingStart,
                 TokenKind::Key,
-                TokenKind::Scalar { value: "k".to_string(), style: ScalarStyle::Plain },
+                TokenKind::Scalar {
+                    value: "k".to_string(),
+                    style: ScalarStyle::Plain
+                },
                 TokenKind::Value,
-                TokenKind::Scalar { value: "v".to_string(), style: ScalarStyle::Plain },
+                TokenKind::Scalar {
+                    value: "v".to_string(),
+                    style: ScalarStyle::Plain
+                },
                 TokenKind::BlockEnd,
                 TokenKind::BlockEnd,
                 TokenKind::StreamEnd,
@@ -1385,8 +1468,14 @@ mod tests {
             kinds("hello\nworld\n"),
             vec![
                 TokenKind::StreamStart,
-                TokenKind::Scalar { value: "hello".to_string(), style: ScalarStyle::Plain },
-                TokenKind::Scalar { value: "world".to_string(), style: ScalarStyle::Plain },
+                TokenKind::Scalar {
+                    value: "hello".to_string(),
+                    style: ScalarStyle::Plain
+                },
+                TokenKind::Scalar {
+                    value: "world".to_string(),
+                    style: ScalarStyle::Plain
+                },
                 TokenKind::StreamEnd,
             ]
         );
@@ -1400,9 +1489,15 @@ mod tests {
                 TokenKind::StreamStart,
                 TokenKind::BlockSequenceStart,
                 TokenKind::BlockEntry,
-                TokenKind::Scalar { value: "a".to_string(), style: ScalarStyle::Plain },
+                TokenKind::Scalar {
+                    value: "a".to_string(),
+                    style: ScalarStyle::Plain
+                },
                 TokenKind::BlockEntry,
-                TokenKind::Scalar { value: "b".to_string(), style: ScalarStyle::Plain },
+                TokenKind::Scalar {
+                    value: "b".to_string(),
+                    style: ScalarStyle::Plain
+                },
                 TokenKind::BlockEnd,
                 TokenKind::StreamEnd,
             ]
@@ -1420,9 +1515,15 @@ mod tests {
                 TokenKind::BlockMappingStart,
                 TokenKind::Key,
                 TokenKind::Anchor("a".to_string()),
-                TokenKind::Scalar { value: "foo".to_string(), style: ScalarStyle::Plain },
+                TokenKind::Scalar {
+                    value: "foo".to_string(),
+                    style: ScalarStyle::Plain
+                },
                 TokenKind::Value,
-                TokenKind::Scalar { value: "bar".to_string(), style: ScalarStyle::Plain },
+                TokenKind::Scalar {
+                    value: "bar".to_string(),
+                    style: ScalarStyle::Plain
+                },
                 TokenKind::BlockEnd,
                 TokenKind::StreamEnd,
             ]
@@ -1438,13 +1539,25 @@ mod tests {
                 TokenKind::StreamStart,
                 TokenKind::BlockMappingStart,
                 TokenKind::Key,
-                TokenKind::Scalar { value: "a".to_string(), style: ScalarStyle::Plain },
+                TokenKind::Scalar {
+                    value: "a".to_string(),
+                    style: ScalarStyle::Plain
+                },
                 TokenKind::Value,
-                TokenKind::Scalar { value: "1".to_string(), style: ScalarStyle::Plain },
+                TokenKind::Scalar {
+                    value: "1".to_string(),
+                    style: ScalarStyle::Plain
+                },
                 TokenKind::Key,
-                TokenKind::Scalar { value: "b".to_string(), style: ScalarStyle::Plain },
+                TokenKind::Scalar {
+                    value: "b".to_string(),
+                    style: ScalarStyle::Plain
+                },
                 TokenKind::Value,
-                TokenKind::Scalar { value: "2".to_string(), style: ScalarStyle::Plain },
+                TokenKind::Scalar {
+                    value: "2".to_string(),
+                    style: ScalarStyle::Plain
+                },
                 TokenKind::BlockEnd,
                 TokenKind::StreamEnd,
             ]
@@ -1459,12 +1572,21 @@ mod tests {
                 TokenKind::StreamStart,
                 TokenKind::BlockMappingStart,
                 TokenKind::Key,
-                TokenKind::Scalar { value: "nums".to_string(), style: ScalarStyle::Plain },
+                TokenKind::Scalar {
+                    value: "nums".to_string(),
+                    style: ScalarStyle::Plain
+                },
                 TokenKind::Value,
                 TokenKind::FlowSequenceStart,
-                TokenKind::Scalar { value: "1".to_string(), style: ScalarStyle::Plain },
+                TokenKind::Scalar {
+                    value: "1".to_string(),
+                    style: ScalarStyle::Plain
+                },
                 TokenKind::FlowEntry,
-                TokenKind::Scalar { value: "2".to_string(), style: ScalarStyle::Plain },
+                TokenKind::Scalar {
+                    value: "2".to_string(),
+                    style: ScalarStyle::Plain
+                },
                 TokenKind::FlowSequenceEnd,
                 TokenKind::BlockEnd,
                 TokenKind::StreamEnd,
@@ -1480,20 +1602,121 @@ mod tests {
                 TokenKind::StreamStart,
                 TokenKind::BlockMappingStart,
                 TokenKind::Key,
-                TokenKind::Scalar { value: "a".to_string(), style: ScalarStyle::Plain },
+                TokenKind::Scalar {
+                    value: "a".to_string(),
+                    style: ScalarStyle::Plain
+                },
                 TokenKind::Value,
-                TokenKind::Scalar { value: "1".to_string(), style: ScalarStyle::Plain },
+                TokenKind::Scalar {
+                    value: "1".to_string(),
+                    style: ScalarStyle::Plain
+                },
                 TokenKind::BlockEnd,
                 TokenKind::DocumentStart,
                 TokenKind::BlockMappingStart,
                 TokenKind::Key,
-                TokenKind::Scalar { value: "b".to_string(), style: ScalarStyle::Plain },
+                TokenKind::Scalar {
+                    value: "b".to_string(),
+                    style: ScalarStyle::Plain
+                },
                 TokenKind::Value,
-                TokenKind::Scalar { value: "2".to_string(), style: ScalarStyle::Plain },
+                TokenKind::Scalar {
+                    value: "2".to_string(),
+                    style: ScalarStyle::Plain
+                },
                 TokenKind::BlockEnd,
                 TokenKind::StreamEnd,
             ]
         );
     }
 
+    #[test]
+    fn realistic_block_document() {
+        let input = "name: Ada\njobs:\n  - lang: rust\n    years: 3\n  - lang: yaml\n";
+        assert_eq!(
+            kinds(input),
+            vec![
+                TokenKind::StreamStart,
+                TokenKind::BlockMappingStart,
+                TokenKind::Key,
+                TokenKind::Scalar {
+                    value: "name".to_string(),
+                    style: ScalarStyle::Plain
+                },
+                TokenKind::Value,
+                TokenKind::Scalar {
+                    value: "Ada".to_string(),
+                    style: ScalarStyle::Plain
+                },
+                TokenKind::Key,
+                TokenKind::Scalar {
+                    value: "jobs".to_string(),
+                    style: ScalarStyle::Plain
+                },
+                TokenKind::Value,
+                TokenKind::BlockSequenceStart,
+                TokenKind::BlockEntry,
+                TokenKind::BlockMappingStart,
+                TokenKind::Key,
+                TokenKind::Scalar {
+                    value: "lang".to_string(),
+                    style: ScalarStyle::Plain
+                },
+                TokenKind::Value,
+                TokenKind::Scalar {
+                    value: "rust".to_string(),
+                    style: ScalarStyle::Plain
+                },
+                TokenKind::Key,
+                TokenKind::Scalar {
+                    value: "years".to_string(),
+                    style: ScalarStyle::Plain
+                },
+                TokenKind::Value,
+                TokenKind::Scalar {
+                    value: "3".to_string(),
+                    style: ScalarStyle::Plain
+                },
+                TokenKind::BlockEnd,
+                TokenKind::BlockEntry,
+                TokenKind::BlockMappingStart,
+                TokenKind::Key,
+                TokenKind::Scalar {
+                    value: "lang".to_string(),
+                    style: ScalarStyle::Plain
+                },
+                TokenKind::Value,
+                TokenKind::Scalar {
+                    value: "yaml".to_string(),
+                    style: ScalarStyle::Plain
+                },
+                TokenKind::BlockEnd,
+                TokenKind::BlockEnd,
+                TokenKind::BlockEnd,
+                TokenKind::StreamEnd,
+            ]
+        );
+    }
+
+    #[test]
+    fn flow_still_works_after_block_changes() {
+        assert_eq!(
+            kinds(r#"{"a":"b"}"#),
+            vec![
+                TokenKind::StreamStart,
+                TokenKind::FlowMappingStart,
+                TokenKind::Scalar {
+                    value: "a".to_string(),
+                    style: ScalarStyle::DoubleQuoted
+                },
+                TokenKind::Value,
+                TokenKind::Scalar {
+                    value: "b".to_string(),
+                    style: ScalarStyle::DoubleQuoted
+                },
+                TokenKind::FlowMappingEnd,
+                TokenKind::StreamEnd,
+            ]
+        );
+    }
 }

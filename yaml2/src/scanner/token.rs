@@ -83,9 +83,18 @@ mod tests {
             Token::new(TokenKind::BlockSequenceStart, span).kind,
             TokenKind::BlockSequenceStart
         );
-        assert_eq!(Token::new(TokenKind::BlockMappingStart, span).kind, TokenKind::BlockMappingStart);
-        assert_eq!(Token::new(TokenKind::BlockEnd, span).kind, TokenKind::BlockEnd);
-        assert_eq!(Token::new(TokenKind::BlockEntry, span).kind, TokenKind::BlockEntry);
+        assert_eq!(
+            Token::new(TokenKind::BlockMappingStart, span).kind,
+            TokenKind::BlockMappingStart
+        );
+        assert_eq!(
+            Token::new(TokenKind::BlockEnd, span).kind,
+            TokenKind::BlockEnd
+        );
+        assert_eq!(
+            Token::new(TokenKind::BlockEntry, span).kind,
+            TokenKind::BlockEntry
+        );
     }
 
     #[test]
