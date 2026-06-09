@@ -164,8 +164,10 @@ impl ParserState {
         self.depth += 1;
         if self.depth > self.max_depth {
             self.depth -= 1;
-            return Err(Error::new(ErrorKind::LimitExceeded, "maximum nesting depth exceeded")
-                .with_span(self.span()));
+            return Err(
+                Error::new(ErrorKind::LimitExceeded, "maximum nesting depth exceeded")
+                    .with_span(self.span()),
+            );
         }
         let result = self.parse_node_inner();
         self.depth -= 1;
@@ -203,7 +205,15 @@ impl ParserState {
             Some(TokenKind::Scalar { .. }) => {
                 let token = self.bump();
                 if let TokenKind::Scalar { value, style } = token.kind {
-                    self.emit(EventKind::Scalar { value, style, anchor, tag }, token.span);
+                    self.emit(
+                        EventKind::Scalar {
+                            value,
+                            style,
+                            anchor,
+                            tag,
+                        },
+                        token.span,
+                    );
                 }
                 Ok(())
             }
@@ -220,10 +230,16 @@ impl ParserState {
             Some(TokenKind::BlockSequenceStart) => self.parse_block_sequence(anchor, tag),
             Some(TokenKind::BlockMappingStart) => self.parse_block_mapping(anchor, tag),
             Some(TokenKind::BlockEntry) => self.parse_indentless_sequence(anchor, tag),
+            Some(TokenKind::FlowSequenceStart) => self.parse_flow_sequence(anchor, tag),
             _ => {
                 // Implicit empty (null) node — carries any collected properties.
                 self.emit(
-                    EventKind::Scalar { value: String::new(), style: ScalarStyle::Plain, anchor, tag },
+                    EventKind::Scalar {
+                        value: String::new(),
+                        style: ScalarStyle::Plain,
+                        anchor,
+                        tag,
+                    },
                     span,
                 );
                 Ok(())
@@ -231,11 +247,7 @@ impl ParserState {
         }
     }
 
-    fn parse_block_sequence(
-        &mut self,
-        anchor: Option<String>,
-        tag: Option<String>,
-    ) -> Result<()> {
+    fn parse_block_sequence(&mut self, anchor: Option<String>, tag: Option<String>) -> Result<()> {
         let start = self.bump(); // BlockSequenceStart
         self.emit(EventKind::SequenceStart { anchor, tag }, start.span);
         loop {
@@ -261,11 +273,7 @@ impl ParserState {
         }
     }
 
-    fn parse_block_mapping(
-        &mut self,
-        anchor: Option<String>,
-        tag: Option<String>,
-    ) -> Result<()> {
+    fn parse_block_mapping(&mut self, anchor: Option<String>, tag: Option<String>) -> Result<()> {
         let start = self.bump(); // BlockMappingStart
         self.emit(EventKind::MappingStart { anchor, tag }, start.span);
         loop {
@@ -340,6 +348,97 @@ impl ParserState {
             }
         }
     }
+
+    /// Parses a flow sequence `[ ... ]`. Entries are comma-separated and may be
+    /// single key/value pairs (`[a: b]`), which form implicit single-entry
+    /// mappings.
+    fn parse_flow_sequence(&mut self, anchor: Option<String>, tag: Option<String>) -> Result<()> {
+        let start = self.bump(); // FlowSequenceStart
+        self.emit(EventKind::SequenceStart { anchor, tag }, start.span);
+        loop {
+            if matches!(self.peek(), Some(TokenKind::FlowSequenceEnd)) {
+                let end = self.bump();
+                self.emit(EventKind::SequenceEnd, end.span);
+                return Ok(());
+            }
+            self.parse_flow_sequence_entry()?;
+            match self.peek() {
+                Some(TokenKind::FlowEntry) => {
+                    self.bump();
+                }
+                Some(TokenKind::FlowSequenceEnd) => {
+                    let end = self.bump();
+                    self.emit(EventKind::SequenceEnd, end.span);
+                    return Ok(());
+                }
+                _ => return Err(self.error("expected ',' or ']' in flow sequence")),
+            }
+        }
+    }
+
+    /// Parses one flow sequence entry: either a node, or a single key/value
+    /// pair wrapped in an implicit single-entry mapping.
+    fn parse_flow_sequence_entry(&mut self) -> Result<()> {
+        let mark = self.events.len();
+        let key_span = self.span();
+
+        // `[: v]` — an entry that begins with `:` is a pair with an empty key.
+        if matches!(self.peek(), Some(TokenKind::Value)) {
+            self.emit(
+                EventKind::MappingStart {
+                    anchor: None,
+                    tag: None,
+                },
+                key_span,
+            );
+            self.emit_empty_scalar();
+            self.parse_flow_pair_value()?;
+            return Ok(());
+        }
+
+        // Parse the entry node — the candidate key of a single pair.
+        self.parse_node()?;
+
+        // A trailing `:` promotes this entry to a single-pair mapping.
+        if matches!(self.peek(), Some(TokenKind::Value)) {
+            self.events.insert(
+                mark,
+                Event::new(
+                    EventKind::MappingStart {
+                        anchor: None,
+                        tag: None,
+                    },
+                    key_span,
+                ),
+            );
+            self.parse_flow_pair_value()?;
+        }
+        Ok(())
+    }
+
+    /// Consumes the `:` and parses the value of a flow single-pair mapping,
+    /// then emits `MappingEnd`. The key (and `MappingStart`) are already emitted.
+    fn parse_flow_pair_value(&mut self) -> Result<()> {
+        self.bump(); // Value
+        if self.at_flow_value_end() {
+            self.emit_empty_scalar();
+        } else {
+            self.parse_node()?;
+        }
+        let end_span = self.span();
+        self.emit(EventKind::MappingEnd, end_span);
+        Ok(())
+    }
+
+    /// True when the current token terminates a flow value (separator or close).
+    fn at_flow_value_end(&self) -> bool {
+        matches!(
+            self.peek(),
+            None | Some(TokenKind::FlowEntry)
+                | Some(TokenKind::FlowSequenceEnd)
+                | Some(TokenKind::FlowMappingEnd)
+        )
+    }
 }
 
 #[cfg(test)]
@@ -356,7 +455,10 @@ mod tests {
 
     #[test]
     fn empty_input_is_stream_start_then_end() {
-        assert_eq!(kinds(""), vec![EventKind::StreamStart, EventKind::StreamEnd]);
+        assert_eq!(
+            kinds(""),
+            vec![EventKind::StreamStart, EventKind::StreamEnd]
+        );
     }
 
     #[test]
@@ -382,7 +484,12 @@ mod tests {
             vec![
                 EventKind::StreamStart,
                 EventKind::DocumentStart,
-                EventKind::Scalar { value: "hello".to_string(), style: ScalarStyle::Plain, anchor: None, tag: None },
+                EventKind::Scalar {
+                    value: "hello".to_string(),
+                    style: ScalarStyle::Plain,
+                    anchor: None,
+                    tag: None
+                },
                 EventKind::DocumentEnd,
                 EventKind::StreamEnd,
             ]
@@ -396,7 +503,12 @@ mod tests {
             vec![
                 EventKind::StreamStart,
                 EventKind::DocumentStart,
-                EventKind::Scalar { value: "hello".to_string(), style: ScalarStyle::Plain, anchor: None, tag: None },
+                EventKind::Scalar {
+                    value: "hello".to_string(),
+                    style: ScalarStyle::Plain,
+                    anchor: None,
+                    tag: None
+                },
                 EventKind::DocumentEnd,
                 EventKind::StreamEnd,
             ]
@@ -410,10 +522,20 @@ mod tests {
             vec![
                 EventKind::StreamStart,
                 EventKind::DocumentStart,
-                EventKind::Scalar { value: "a".to_string(), style: ScalarStyle::Plain, anchor: None, tag: None },
+                EventKind::Scalar {
+                    value: "a".to_string(),
+                    style: ScalarStyle::Plain,
+                    anchor: None,
+                    tag: None
+                },
                 EventKind::DocumentEnd,
                 EventKind::DocumentStart,
-                EventKind::Scalar { value: "b".to_string(), style: ScalarStyle::Plain, anchor: None, tag: None },
+                EventKind::Scalar {
+                    value: "b".to_string(),
+                    style: ScalarStyle::Plain,
+                    anchor: None,
+                    tag: None
+                },
                 EventKind::DocumentEnd,
                 EventKind::StreamEnd,
             ]
@@ -441,9 +563,22 @@ mod tests {
             vec![
                 EventKind::StreamStart,
                 EventKind::DocumentStart,
-                EventKind::SequenceStart { anchor: None, tag: None },
-                EventKind::Scalar { value: "a".to_string(), style: ScalarStyle::Plain, anchor: None, tag: None },
-                EventKind::Scalar { value: "b".to_string(), style: ScalarStyle::Plain, anchor: None, tag: None },
+                EventKind::SequenceStart {
+                    anchor: None,
+                    tag: None
+                },
+                EventKind::Scalar {
+                    value: "a".to_string(),
+                    style: ScalarStyle::Plain,
+                    anchor: None,
+                    tag: None
+                },
+                EventKind::Scalar {
+                    value: "b".to_string(),
+                    style: ScalarStyle::Plain,
+                    anchor: None,
+                    tag: None
+                },
                 EventKind::SequenceEnd,
                 EventKind::DocumentEnd,
                 EventKind::StreamEnd,
@@ -458,9 +593,20 @@ mod tests {
             vec![
                 EventKind::StreamStart,
                 EventKind::DocumentStart,
-                EventKind::SequenceStart { anchor: None, tag: None },
-                EventKind::SequenceStart { anchor: None, tag: None },
-                EventKind::Scalar { value: "a".to_string(), style: ScalarStyle::Plain, anchor: None, tag: None },
+                EventKind::SequenceStart {
+                    anchor: None,
+                    tag: None
+                },
+                EventKind::SequenceStart {
+                    anchor: None,
+                    tag: None
+                },
+                EventKind::Scalar {
+                    value: "a".to_string(),
+                    style: ScalarStyle::Plain,
+                    anchor: None,
+                    tag: None
+                },
                 EventKind::SequenceEnd,
                 EventKind::SequenceEnd,
                 EventKind::DocumentEnd,
@@ -476,11 +622,34 @@ mod tests {
             vec![
                 EventKind::StreamStart,
                 EventKind::DocumentStart,
-                EventKind::MappingStart { anchor: None, tag: None },
-                EventKind::Scalar { value: "a".to_string(), style: ScalarStyle::Plain, anchor: None, tag: None },
-                EventKind::Scalar { value: "1".to_string(), style: ScalarStyle::Plain, anchor: None, tag: None },
-                EventKind::Scalar { value: "b".to_string(), style: ScalarStyle::Plain, anchor: None, tag: None },
-                EventKind::Scalar { value: "2".to_string(), style: ScalarStyle::Plain, anchor: None, tag: None },
+                EventKind::MappingStart {
+                    anchor: None,
+                    tag: None
+                },
+                EventKind::Scalar {
+                    value: "a".to_string(),
+                    style: ScalarStyle::Plain,
+                    anchor: None,
+                    tag: None
+                },
+                EventKind::Scalar {
+                    value: "1".to_string(),
+                    style: ScalarStyle::Plain,
+                    anchor: None,
+                    tag: None
+                },
+                EventKind::Scalar {
+                    value: "b".to_string(),
+                    style: ScalarStyle::Plain,
+                    anchor: None,
+                    tag: None
+                },
+                EventKind::Scalar {
+                    value: "2".to_string(),
+                    style: ScalarStyle::Plain,
+                    anchor: None,
+                    tag: None
+                },
                 EventKind::MappingEnd,
                 EventKind::DocumentEnd,
                 EventKind::StreamEnd,
@@ -495,11 +664,32 @@ mod tests {
             vec![
                 EventKind::StreamStart,
                 EventKind::DocumentStart,
-                EventKind::MappingStart { anchor: None, tag: None },
-                EventKind::Scalar { value: "outer".to_string(), style: ScalarStyle::Plain, anchor: None, tag: None },
-                EventKind::MappingStart { anchor: None, tag: None },
-                EventKind::Scalar { value: "inner".to_string(), style: ScalarStyle::Plain, anchor: None, tag: None },
-                EventKind::Scalar { value: "v".to_string(), style: ScalarStyle::Plain, anchor: None, tag: None },
+                EventKind::MappingStart {
+                    anchor: None,
+                    tag: None
+                },
+                EventKind::Scalar {
+                    value: "outer".to_string(),
+                    style: ScalarStyle::Plain,
+                    anchor: None,
+                    tag: None
+                },
+                EventKind::MappingStart {
+                    anchor: None,
+                    tag: None
+                },
+                EventKind::Scalar {
+                    value: "inner".to_string(),
+                    style: ScalarStyle::Plain,
+                    anchor: None,
+                    tag: None
+                },
+                EventKind::Scalar {
+                    value: "v".to_string(),
+                    style: ScalarStyle::Plain,
+                    anchor: None,
+                    tag: None
+                },
                 EventKind::MappingEnd,
                 EventKind::MappingEnd,
                 EventKind::DocumentEnd,
@@ -515,10 +705,26 @@ mod tests {
             vec![
                 EventKind::StreamStart,
                 EventKind::DocumentStart,
-                EventKind::SequenceStart { anchor: None, tag: None },
-                EventKind::MappingStart { anchor: None, tag: None },
-                EventKind::Scalar { value: "k".to_string(), style: ScalarStyle::Plain, anchor: None, tag: None },
-                EventKind::Scalar { value: "v".to_string(), style: ScalarStyle::Plain, anchor: None, tag: None },
+                EventKind::SequenceStart {
+                    anchor: None,
+                    tag: None
+                },
+                EventKind::MappingStart {
+                    anchor: None,
+                    tag: None
+                },
+                EventKind::Scalar {
+                    value: "k".to_string(),
+                    style: ScalarStyle::Plain,
+                    anchor: None,
+                    tag: None
+                },
+                EventKind::Scalar {
+                    value: "v".to_string(),
+                    style: ScalarStyle::Plain,
+                    anchor: None,
+                    tag: None
+                },
                 EventKind::MappingEnd,
                 EventKind::SequenceEnd,
                 EventKind::DocumentEnd,
@@ -534,13 +740,182 @@ mod tests {
             vec![
                 EventKind::StreamStart,
                 EventKind::DocumentStart,
-                EventKind::MappingStart { anchor: None, tag: None },
-                EventKind::Scalar { value: "items".to_string(), style: ScalarStyle::Plain, anchor: None, tag: None },
-                EventKind::SequenceStart { anchor: None, tag: None },
-                EventKind::Scalar { value: "a".to_string(), style: ScalarStyle::Plain, anchor: None, tag: None },
-                EventKind::Scalar { value: "b".to_string(), style: ScalarStyle::Plain, anchor: None, tag: None },
+                EventKind::MappingStart {
+                    anchor: None,
+                    tag: None
+                },
+                EventKind::Scalar {
+                    value: "items".to_string(),
+                    style: ScalarStyle::Plain,
+                    anchor: None,
+                    tag: None
+                },
+                EventKind::SequenceStart {
+                    anchor: None,
+                    tag: None
+                },
+                EventKind::Scalar {
+                    value: "a".to_string(),
+                    style: ScalarStyle::Plain,
+                    anchor: None,
+                    tag: None
+                },
+                EventKind::Scalar {
+                    value: "b".to_string(),
+                    style: ScalarStyle::Plain,
+                    anchor: None,
+                    tag: None
+                },
                 EventKind::SequenceEnd,
                 EventKind::MappingEnd,
+                EventKind::DocumentEnd,
+                EventKind::StreamEnd,
+            ]
+        );
+    }
+
+    #[test]
+    fn flow_sequence() {
+        assert_eq!(
+            kinds("[a, b]"),
+            vec![
+                EventKind::StreamStart,
+                EventKind::DocumentStart,
+                EventKind::SequenceStart {
+                    anchor: None,
+                    tag: None
+                },
+                EventKind::Scalar {
+                    value: "a".to_string(),
+                    style: ScalarStyle::Plain,
+                    anchor: None,
+                    tag: None
+                },
+                EventKind::Scalar {
+                    value: "b".to_string(),
+                    style: ScalarStyle::Plain,
+                    anchor: None,
+                    tag: None
+                },
+                EventKind::SequenceEnd,
+                EventKind::DocumentEnd,
+                EventKind::StreamEnd,
+            ]
+        );
+    }
+
+    #[test]
+    fn flow_sequence_single_pair_mapping() {
+        assert_eq!(
+            kinds("[a: b]"),
+            vec![
+                EventKind::StreamStart,
+                EventKind::DocumentStart,
+                EventKind::SequenceStart {
+                    anchor: None,
+                    tag: None
+                },
+                EventKind::MappingStart {
+                    anchor: None,
+                    tag: None
+                },
+                EventKind::Scalar {
+                    value: "a".to_string(),
+                    style: ScalarStyle::Plain,
+                    anchor: None,
+                    tag: None
+                },
+                EventKind::Scalar {
+                    value: "b".to_string(),
+                    style: ScalarStyle::Plain,
+                    anchor: None,
+                    tag: None
+                },
+                EventKind::MappingEnd,
+                EventKind::SequenceEnd,
+                EventKind::DocumentEnd,
+                EventKind::StreamEnd,
+            ]
+        );
+    }
+
+    #[test]
+    fn empty_flow_sequence() {
+        assert_eq!(
+            kinds("[]"),
+            vec![
+                EventKind::StreamStart,
+                EventKind::DocumentStart,
+                EventKind::SequenceStart {
+                    anchor: None,
+                    tag: None
+                },
+                EventKind::SequenceEnd,
+                EventKind::DocumentEnd,
+                EventKind::StreamEnd,
+            ]
+        );
+    }
+
+    #[test]
+    fn nested_flow_sequence() {
+        assert_eq!(
+            kinds("[[a], b]"),
+            vec![
+                EventKind::StreamStart,
+                EventKind::DocumentStart,
+                EventKind::SequenceStart {
+                    anchor: None,
+                    tag: None
+                },
+                EventKind::SequenceStart {
+                    anchor: None,
+                    tag: None
+                },
+                EventKind::Scalar {
+                    value: "a".to_string(),
+                    style: ScalarStyle::Plain,
+                    anchor: None,
+                    tag: None
+                },
+                EventKind::SequenceEnd,
+                EventKind::Scalar {
+                    value: "b".to_string(),
+                    style: ScalarStyle::Plain,
+                    anchor: None,
+                    tag: None
+                },
+                EventKind::SequenceEnd,
+                EventKind::DocumentEnd,
+                EventKind::StreamEnd,
+            ]
+        );
+    }
+
+    #[test]
+    fn flow_sequence_trailing_comma() {
+        assert_eq!(
+            kinds("[a, b,]"),
+            vec![
+                EventKind::StreamStart,
+                EventKind::DocumentStart,
+                EventKind::SequenceStart {
+                    anchor: None,
+                    tag: None
+                },
+                EventKind::Scalar {
+                    value: "a".to_string(),
+                    style: ScalarStyle::Plain,
+                    anchor: None,
+                    tag: None
+                },
+                EventKind::Scalar {
+                    value: "b".to_string(),
+                    style: ScalarStyle::Plain,
+                    anchor: None,
+                    tag: None
+                },
+                EventKind::SequenceEnd,
                 EventKind::DocumentEnd,
                 EventKind::StreamEnd,
             ]
