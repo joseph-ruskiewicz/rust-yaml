@@ -682,4 +682,62 @@ b: [*a, *a]
     fn non_specific_tag_forces_string() {
         assert_eq!(parse("! 42\n").as_str(), Some("42"));
     }
+
+    #[test]
+    fn realistic_document_tree() {
+        let input = "\
+name: Ada
+active: true
+scores: [10, 20, 30]
+address:
+  city: Portland
+  zip: \"97201\"
+";
+        let v = parse(input);
+        let m = v.as_mapping().unwrap();
+        assert_eq!(m.get(&key("name")).unwrap().as_str(), Some("Ada"));
+        assert_eq!(m.get(&key("active")).unwrap().as_bool(), Some(true));
+        let scores = m.get(&key("scores")).unwrap().as_sequence().unwrap();
+        assert_eq!(scores.len(), 3);
+        assert_eq!(scores[1].as_int(), Some(20));
+        let addr = m.get(&key("address")).unwrap().as_mapping().unwrap();
+        assert_eq!(addr.get(&key("city")).unwrap().as_str(), Some("Portland"));
+        // Quoted zip stays a string, not an int.
+        assert_eq!(addr.get(&key("zip")).unwrap().as_str(), Some("97201"));
+    }
+
+    #[test]
+    fn anchors_aliases_and_merge_together() {
+        let input = "\
+defaults: &d
+  retries: 3
+  timeout: 30
+job:
+  <<: *d
+  timeout: 60
+";
+        let opts = ParseOptions {
+            merge_keys: MergeKeys::On,
+            ..Default::default()
+        };
+        let v = crate::api::parse_with(input, &opts).unwrap();
+        let job = v.as_mapping().unwrap().get(&key("job")).unwrap();
+        let job = job.as_mapping().unwrap();
+        assert_eq!(job.get(&key("retries")).unwrap().as_int(), Some(3));
+        assert_eq!(job.get(&key("timeout")).unwrap().as_int(), Some(60));
+    }
+
+    #[test]
+    fn schema_changes_scalar_typing() {
+        // Under Yaml1_1, "yes" is a bool; under Core it is a string.
+        let yes_core = parse("yes\n");
+        assert_eq!(yes_core.as_str(), Some("yes"));
+
+        let opts = ParseOptions {
+            schema: crate::options::Schema::Yaml1_1,
+            ..Default::default()
+        };
+        let yes_11 = crate::api::parse_with("yes\n", &opts).unwrap();
+        assert_eq!(yes_11.as_bool(), Some(true));
+    }
 }
