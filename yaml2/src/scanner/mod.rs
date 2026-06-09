@@ -153,7 +153,10 @@ impl<'a> Scanner<'a> {
                 }
                 let token = self.scan_content(c, start)?;
                 if self.flow_depth == 0 && Self::is_node_token(&token.kind) {
-                    self.simple_key_allowed = false;
+                    // Block scalars end at a dedent boundary (already at the
+                    // start of a new line). Keep simple_key_allowed true so that
+                    // the first token on the next line can still be a mapping key.
+                    self.simple_key_allowed = Self::is_block_scalar(&token.kind);
                 }
                 self.tokens.push_back(token);
                 Ok(())
@@ -278,6 +281,16 @@ impl<'a> Scanner<'a> {
                 | TokenKind::Anchor(_)
                 | TokenKind::Alias(_)
                 | TokenKind::Tag(_)
+        )
+    }
+
+    /// Whether a token is a block scalar (literal or folded). Block scalars end
+    /// at a dedent boundary, so `simple_key_allowed` must remain true afterward.
+    fn is_block_scalar(kind: &TokenKind) -> bool {
+        matches!(
+            kind,
+            TokenKind::Scalar { style: ScalarStyle::Literal, .. }
+                | TokenKind::Scalar { style: ScalarStyle::Folded, .. }
         )
     }
 
@@ -2000,6 +2013,61 @@ mod tests {
                     value: "1".to_string(),
                     style: ScalarStyle::Plain
                 },
+                TokenKind::StreamEnd,
+            ]
+        );
+    }
+
+    #[test]
+    fn block_scalar_as_mapping_value() {
+        assert_eq!(
+            kinds("key: |\n  a\n  b\n"),
+            vec![
+                TokenKind::StreamStart,
+                TokenKind::BlockMappingStart,
+                TokenKind::Key,
+                TokenKind::Scalar { value: "key".to_string(), style: ScalarStyle::Plain },
+                TokenKind::Value,
+                TokenKind::Scalar { value: "a\nb\n".to_string(), style: ScalarStyle::Literal },
+                TokenKind::BlockEnd,
+                TokenKind::StreamEnd,
+            ]
+        );
+    }
+
+    #[test]
+    fn block_scalar_then_next_key() {
+        assert_eq!(
+            kinds("a: |\n  x\nb: 2\n"),
+            vec![
+                TokenKind::StreamStart,
+                TokenKind::BlockMappingStart,
+                TokenKind::Key,
+                TokenKind::Scalar { value: "a".to_string(), style: ScalarStyle::Plain },
+                TokenKind::Value,
+                TokenKind::Scalar { value: "x\n".to_string(), style: ScalarStyle::Literal },
+                TokenKind::Key,
+                TokenKind::Scalar { value: "b".to_string(), style: ScalarStyle::Plain },
+                TokenKind::Value,
+                TokenKind::Scalar { value: "2".to_string(), style: ScalarStyle::Plain },
+                TokenKind::BlockEnd,
+                TokenKind::StreamEnd,
+            ]
+        );
+    }
+
+    #[test]
+    fn block_scalar_as_sequence_item() {
+        assert_eq!(
+            kinds("- |\n  a\n- b\n"),
+            vec![
+                TokenKind::StreamStart,
+                TokenKind::BlockSequenceStart,
+                TokenKind::BlockEntry,
+                TokenKind::Scalar { value: "a\n".to_string(), style: ScalarStyle::Literal },
+                TokenKind::BlockEntry,
+                TokenKind::Scalar { value: "b".to_string(), style: ScalarStyle::Plain },
+                TokenKind::BlockEnd,
                 TokenKind::StreamEnd,
             ]
         );
