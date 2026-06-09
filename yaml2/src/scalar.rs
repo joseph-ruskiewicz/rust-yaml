@@ -91,9 +91,52 @@ fn resolve_json(raw: &str) -> ValueData {
     ValueData::String(raw.to_string())
 }
 
+// YAML 1.1 scalar resolution. Covers the user-facing differences from Core 1.2:
+// the "Norway problem" booleans (yes/no/on/off/y/n) and leading-zero octal.
+// Deferred to a later hardening pass: binary (0b...), sexagesimal (1:2:3),
+// and underscore digit separators.
 fn resolve_yaml11(raw: &str) -> ValueData {
-    // Implemented in Task 10.
+    match raw {
+        "" | "~" | "null" | "Null" | "NULL" => return ValueData::Null,
+        _ => {}
+    }
+    if let Some(b) = yaml11_bool(raw) {
+        return ValueData::Bool(b);
+    }
+    // Leading-zero octal: 0[0-7]+ (but plain "0" is decimal zero).
+    if let Some(rest) = raw.strip_prefix('0') {
+        if !rest.is_empty() && rest.bytes().all(|b| (b'0'..=b'7').contains(&b)) {
+            if let Ok(i) = i64::from_str_radix(rest, 8) {
+                return ValueData::Int(i);
+            }
+        }
+    }
+    // Decimal int: [-+]?[0-9]+
+    {
+        let body = raw.strip_prefix(['+', '-']).unwrap_or(raw);
+        if !body.is_empty() && body.bytes().all(|b| b.is_ascii_digit()) {
+            return match raw.parse::<i64>() {
+                Ok(i) => ValueData::Int(i),
+                Err(_) => ValueData::String(raw.to_string()),
+            };
+        }
+    }
+    if let Some(f) = parse_core_float(raw) {
+        return ValueData::Float(f);
+    }
     ValueData::String(raw.to_string())
+}
+
+fn yaml11_bool(raw: &str) -> Option<bool> {
+    match raw {
+        "y" | "Y" | "yes" | "Yes" | "YES" | "true" | "True" | "TRUE" | "on" | "On" | "ON" => {
+            Some(true)
+        }
+        "n" | "N" | "no" | "No" | "NO" | "false" | "False" | "FALSE" | "off" | "Off" | "OFF" => {
+            Some(false)
+        }
+        _ => None,
+    }
 }
 
 #[cfg(test)]
@@ -185,5 +228,39 @@ mod tests {
         assert!(matches!(core("1e"), ValueData::String(_)));
         assert!(matches!(core("0x"), ValueData::String(_)));
         assert!(matches!(core("0o8"), ValueData::String(_)));
+    }
+
+    fn y11(raw: &str) -> ValueData {
+        resolve(raw, ScalarStyle::Plain, Schema::Yaml1_1)
+    }
+
+    #[test]
+    fn yaml11_norway_problem_present() {
+        assert!(matches!(y11("NO"), ValueData::Bool(false)));
+        assert!(matches!(y11("no"), ValueData::Bool(false)));
+        assert!(matches!(y11("yes"), ValueData::Bool(true)));
+        assert!(matches!(y11("on"), ValueData::Bool(true)));
+        assert!(matches!(y11("off"), ValueData::Bool(false)));
+        assert!(matches!(y11("y"), ValueData::Bool(true)));
+        assert!(matches!(y11("N"), ValueData::Bool(false)));
+    }
+
+    #[test]
+    fn yaml11_leading_zero_is_octal() {
+        assert!(matches!(y11("0777"), ValueData::Int(511)));
+        assert!(matches!(y11("0"), ValueData::Int(0)));
+    }
+
+    #[test]
+    fn yaml11_decimal_and_string() {
+        assert!(matches!(y11("42"), ValueData::Int(42)));
+        assert!(matches!(y11("hello"), ValueData::String(s) if s == "hello"));
+    }
+
+    #[test]
+    fn yaml11_null() {
+        assert!(matches!(y11("~"), ValueData::Null));
+        assert!(matches!(y11("null"), ValueData::Null));
+        assert!(matches!(y11(""), ValueData::Null));
     }
 }
