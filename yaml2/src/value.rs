@@ -1,6 +1,8 @@
 //! The owned, unified YAML value tree.
 
 use crate::meta::Meta;
+use crate::meta::ScalarStyle;
+use crate::options::Schema;
 use core::cmp::Ordering;
 use core::hash::{Hash, Hasher};
 use indexmap::IndexMap;
@@ -81,7 +83,7 @@ impl Value {
         self.data
     }
 
-    // Internal metadata plumbing. Public metadata accessors arrive in Task 7.
+    // Internal metadata plumbing backing the public metadata accessors.
     pub(crate) fn set_meta_box(&mut self, meta: Option<Box<Meta>>) {
         self.meta = meta;
     }
@@ -187,8 +189,7 @@ impl Hash for Value {
 
 impl PartialEq for Mapping {
     fn eq(&self, other: &Self) -> bool {
-        self.entries.len() == other.entries.len()
-            && self.entries.iter().eq(other.entries.iter())
+        self.entries.len() == other.entries.len() && self.entries.iter().eq(other.entries.iter())
     }
 }
 
@@ -217,7 +218,9 @@ impl Hash for Mapping {
 
 impl Mapping {
     pub fn new() -> Self {
-        Self { entries: IndexMap::new() }
+        Self {
+            entries: IndexMap::new(),
+        }
     }
 
     pub fn insert(&mut self, key: Value, value: Value) -> Option<Value> {
@@ -356,6 +359,14 @@ impl Value {
     }
 }
 
+impl Value {
+    /// Builds a scalar value by resolving raw source text under the given style
+    /// and schema. Quoted/literal/folded styles always yield a string.
+    pub fn from_scalar(raw: &str, style: ScalarStyle, schema: Schema) -> Value {
+        Value::new(crate::scalar::resolve(raw, style, schema))
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -427,10 +438,7 @@ mod tests {
         m.insert(Value::string("a"), Value::int(1));
         m.insert(Value::string("c"), Value::int(3));
 
-        let keys: Vec<&str> = m
-            .iter()
-            .map(|(k, _)| k.as_str().unwrap())
-            .collect();
+        let keys: Vec<&str> = m.iter().map(|(k, _)| k.as_str().unwrap()).collect();
         assert_eq!(keys, ["b", "a", "c"]);
     }
 
@@ -490,11 +498,29 @@ mod tests {
 
     #[test]
     fn with_meta_sets_and_take_meta_removes() {
-        let meta = Meta { tag: Some("!!str".to_string()), ..Meta::default() };
+        let meta = Meta {
+            tag: Some("!!str".to_string()),
+            ..Meta::default()
+        };
         let mut v = Value::string("x").with_meta(meta);
         assert!(v.meta().is_some());
         let taken = v.take_meta().unwrap();
         assert_eq!(taken.tag.as_deref(), Some("!!str"));
         assert!(v.meta().is_none());
+    }
+
+    #[test]
+    fn from_scalar_resolves_per_schema() {
+        use crate::meta::ScalarStyle;
+        use crate::options::Schema;
+
+        let core = Value::from_scalar("0777", ScalarStyle::Plain, Schema::Core1_2);
+        assert_eq!(core.as_int(), Some(777));
+
+        let y11 = Value::from_scalar("0777", ScalarStyle::Plain, Schema::Yaml1_1);
+        assert_eq!(y11.as_int(), Some(511));
+
+        let quoted = Value::from_scalar("true", ScalarStyle::SingleQuoted, Schema::Core1_2);
+        assert_eq!(quoted.as_str(), Some("true"));
     }
 }

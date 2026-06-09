@@ -7,8 +7,6 @@ use crate::value::ValueData;
 /// Resolves a scalar's raw text into typed data according to `style` and `schema`.
 ///
 /// Non-plain scalars (quoted, literal, folded) are always strings.
-// wired into Value::from_scalar in Task 12
-#[allow(dead_code)]
 pub(crate) fn resolve(raw: &str, style: ScalarStyle, schema: Schema) -> ValueData {
     if style != ScalarStyle::Plain {
         return ValueData::String(raw.to_string());
@@ -78,8 +76,7 @@ fn parse_core_float(raw: &str) -> Option<f64> {
     }
     // Core 1.2 floats permit a leading `+` and a leading-dot form like `.5`;
     // `f64::parse` is the final arbiter of structural validity.
-    let allowed =
-        |b: u8| b.is_ascii_digit() || matches!(b, b'.' | b'e' | b'E' | b'+' | b'-');
+    let allowed = |b: u8| b.is_ascii_digit() || matches!(b, b'.' | b'e' | b'E' | b'+' | b'-');
     if !raw.bytes().all(allowed) {
         return None;
     }
