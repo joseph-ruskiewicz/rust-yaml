@@ -28,6 +28,14 @@ pub(crate) enum TokenKind {
     DocumentStart,
     /// `...`
     DocumentEnd,
+    /// Start of an indentation-based block sequence.
+    BlockSequenceStart,
+    /// Start of an indentation-based block mapping.
+    BlockMappingStart,
+    /// End of a block sequence or mapping (one per opened block level).
+    BlockEnd,
+    /// A block sequence entry indicator (`-`).
+    BlockEntry,
     /// `[`
     FlowSequenceStart,
     /// `]`
@@ -66,6 +74,18 @@ mod tests {
         let t = Token::new(TokenKind::FlowEntry, span);
         assert_eq!(t.kind, TokenKind::FlowEntry);
         assert_eq!(t.span, span);
+    }
+
+    #[test]
+    fn block_token_kinds_exist() {
+        let span = Span::new(Position::new(0, 1, 1), Position::new(0, 1, 1));
+        assert_eq!(
+            Token::new(TokenKind::BlockSequenceStart, span).kind,
+            TokenKind::BlockSequenceStart
+        );
+        assert_eq!(Token::new(TokenKind::BlockMappingStart, span).kind, TokenKind::BlockMappingStart);
+        assert_eq!(Token::new(TokenKind::BlockEnd, span).kind, TokenKind::BlockEnd);
+        assert_eq!(Token::new(TokenKind::BlockEntry, span).kind, TokenKind::BlockEntry);
     }
 
     #[test]
