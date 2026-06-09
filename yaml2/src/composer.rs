@@ -5,7 +5,7 @@ use std::collections::HashMap;
 use crate::error::{Error, ErrorKind, Result, Span};
 use crate::event::{Event, EventKind};
 use crate::meta::ScalarStyle;
-use crate::options::ParseOptions;
+use crate::options::{ParseOptions, Schema};
 use crate::value::{Mapping, Value, ValueData};
 
 /// Composes a validated event stream into one `Value` per document.
@@ -192,17 +192,45 @@ impl Composer<'_> {
         Ok(value)
     }
 
-    /// Resolves a scalar event into a typed `Value`. Untagged scalars use the
-    /// configured schema; tagged scalars are handled in Task 6.
+    /// Resolves a scalar event into a typed `Value`, honoring an explicit core
+    /// tag if present. Untagged scalars use the configured schema. The
+    /// non-specific `!` and unknown/custom tags resolve to strings.
     fn resolve_scalar(
         &self,
         raw: &str,
         style: ScalarStyle,
         tag: Option<&str>,
-        _span: Span,
+        span: Span,
     ) -> Result<Value> {
-        let _ = tag; // tag handling added in Task 6
-        Ok(Value::from_scalar(raw, style, self.options.schema))
+        let Some(tag) = tag else {
+            return Ok(Value::from_scalar(raw, style, self.options.schema));
+        };
+        match classify_tag(tag) {
+            Some(CoreTag::Str) => Ok(Value::string(raw)),
+            Some(CoreTag::Null) => match typed(raw) {
+                ValueData::Null => Ok(Value::null()),
+                _ => Err(self.error(span, format!("value {raw:?} is not a valid !!null"))),
+            },
+            Some(CoreTag::Bool) => match typed(raw) {
+                ValueData::Bool(b) => Ok(Value::bool(b)),
+                _ => Err(self.error(span, format!("value {raw:?} is not a valid !!bool"))),
+            },
+            Some(CoreTag::Int) => match typed(raw) {
+                ValueData::Int(i) => Ok(Value::int(i)),
+                _ => Err(self.error(span, format!("value {raw:?} is not a valid !!int"))),
+            },
+            Some(CoreTag::Float) => match typed(raw) {
+                ValueData::Float(f) => Ok(Value::float(f)),
+                ValueData::Int(i) => Ok(Value::float(i as f64)),
+                _ => Err(self.error(span, format!("value {raw:?} is not a valid !!float"))),
+            },
+            Some(CoreTag::Seq) | Some(CoreTag::Map) => Err(self.error(
+                span,
+                format!("collection tag '{tag}' applied to a scalar node"),
+            )),
+            // Non-specific `!` or any unknown/custom tag: treat as a string.
+            None => Ok(Value::string(raw)),
+        }
     }
 }
 
@@ -217,6 +245,39 @@ fn count_nodes(value: &Value) -> usize {
             .sum(),
         _ => 0,
     }
+}
+
+/// The seven core schema tags this layer understands on scalar nodes.
+enum CoreTag {
+    Str,
+    Null,
+    Bool,
+    Int,
+    Float,
+    Seq,
+    Map,
+}
+
+/// Maps a raw tag string (shorthand `!!x` or verbatim `tag:yaml.org,2002:x`) to
+/// a core tag, or `None` for the non-specific `!` and unknown/custom tags.
+fn classify_tag(tag: &str) -> Option<CoreTag> {
+    match tag {
+        "!!str" | "tag:yaml.org,2002:str" => Some(CoreTag::Str),
+        "!!null" | "tag:yaml.org,2002:null" => Some(CoreTag::Null),
+        "!!bool" | "tag:yaml.org,2002:bool" => Some(CoreTag::Bool),
+        "!!int" | "tag:yaml.org,2002:int" => Some(CoreTag::Int),
+        "!!float" | "tag:yaml.org,2002:float" => Some(CoreTag::Float),
+        "!!seq" | "tag:yaml.org,2002:seq" => Some(CoreTag::Seq),
+        "!!map" | "tag:yaml.org,2002:map" => Some(CoreTag::Map),
+        _ => None,
+    }
+}
+
+/// Resolves raw text under the Core 1.2 schema for tag-driven typing. A core
+/// tag explicitly requests its type, so we type the text with core rules
+/// regardless of the document's configured schema.
+fn typed(raw: &str) -> ValueData {
+    crate::scalar::resolve(raw, ScalarStyle::Plain, Schema::Core1_2)
 }
 
 #[cfg(test)]
@@ -421,5 +482,52 @@ b: [*a, *a]
             ..Default::default()
         };
         assert!(crate::api::parse_with(input, &opts).is_ok());
+    }
+
+    #[test]
+    fn str_tag_forces_string() {
+        assert_eq!(parse("!!str 123\n").as_str(), Some("123"));
+    }
+
+    #[test]
+    fn int_tag_on_quoted_value() {
+        assert_eq!(parse("!!int \"5\"\n").as_int(), Some(5));
+    }
+
+    #[test]
+    fn float_tag_widens_integer_text() {
+        assert_eq!(parse("!!float 5\n").as_float(), Some(5.0));
+    }
+
+    #[test]
+    fn bool_tag_parses_keyword() {
+        assert_eq!(parse("!!bool true\n").as_bool(), Some(true));
+    }
+
+    #[test]
+    fn null_tag_parses_tilde() {
+        assert!(parse("!!null ~\n").is_null());
+    }
+
+    #[test]
+    fn mismatched_int_tag_is_error() {
+        let err = crate::api::parse("!!int notanumber\n").unwrap_err();
+        assert_eq!(err.kind(), crate::error::ErrorKind::Compose);
+    }
+
+    #[test]
+    fn collection_tag_on_scalar_is_error() {
+        let err = crate::api::parse("!!map scalar\n").unwrap_err();
+        assert_eq!(err.kind(), crate::error::ErrorKind::Compose);
+    }
+
+    #[test]
+    fn unknown_tag_on_scalar_resolves_to_string() {
+        assert_eq!(parse("!custom 42\n").as_str(), Some("42"));
+    }
+
+    #[test]
+    fn non_specific_tag_forces_string() {
+        assert_eq!(parse("! 42\n").as_str(), Some("42"));
     }
 }
