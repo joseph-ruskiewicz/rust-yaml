@@ -211,6 +211,7 @@ impl ParserState {
                 }
                 Ok(())
             }
+            Some(TokenKind::BlockSequenceStart) => self.parse_block_sequence(anchor, tag),
             _ => {
                 // Implicit empty (null) node — carries any collected properties.
                 self.emit(
@@ -218,6 +219,36 @@ impl ParserState {
                     span,
                 );
                 Ok(())
+            }
+        }
+    }
+
+    fn parse_block_sequence(
+        &mut self,
+        anchor: Option<String>,
+        tag: Option<String>,
+    ) -> Result<()> {
+        let start = self.bump(); // BlockSequenceStart
+        self.emit(EventKind::SequenceStart { anchor, tag }, start.span);
+        loop {
+            match self.peek() {
+                Some(TokenKind::BlockEntry) => {
+                    self.bump();
+                    if matches!(
+                        self.peek(),
+                        Some(TokenKind::BlockEntry) | Some(TokenKind::BlockEnd)
+                    ) {
+                        self.emit_empty_scalar();
+                    } else {
+                        self.parse_node()?;
+                    }
+                }
+                Some(TokenKind::BlockEnd) => {
+                    let end = self.bump();
+                    self.emit(EventKind::SequenceEnd, end.span);
+                    return Ok(());
+                }
+                _ => return Err(self.error("expected a block sequence entry or end")),
             }
         }
     }
@@ -309,6 +340,41 @@ mod tests {
                 EventKind::StreamStart,
                 EventKind::DocumentStart,
                 EventKind::Alias("x".to_string()),
+                EventKind::DocumentEnd,
+                EventKind::StreamEnd,
+            ]
+        );
+    }
+
+    #[test]
+    fn block_sequence() {
+        assert_eq!(
+            kinds("- a\n- b\n"),
+            vec![
+                EventKind::StreamStart,
+                EventKind::DocumentStart,
+                EventKind::SequenceStart { anchor: None, tag: None },
+                EventKind::Scalar { value: "a".to_string(), style: ScalarStyle::Plain, anchor: None, tag: None },
+                EventKind::Scalar { value: "b".to_string(), style: ScalarStyle::Plain, anchor: None, tag: None },
+                EventKind::SequenceEnd,
+                EventKind::DocumentEnd,
+                EventKind::StreamEnd,
+            ]
+        );
+    }
+
+    #[test]
+    fn nested_block_sequence() {
+        assert_eq!(
+            kinds("- - a\n"),
+            vec![
+                EventKind::StreamStart,
+                EventKind::DocumentStart,
+                EventKind::SequenceStart { anchor: None, tag: None },
+                EventKind::SequenceStart { anchor: None, tag: None },
+                EventKind::Scalar { value: "a".to_string(), style: ScalarStyle::Plain, anchor: None, tag: None },
+                EventKind::SequenceEnd,
+                EventKind::SequenceEnd,
                 EventKind::DocumentEnd,
                 EventKind::StreamEnd,
             ]
