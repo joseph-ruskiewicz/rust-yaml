@@ -53,6 +53,8 @@ fn is_core_int_shape(raw: &str) -> bool {
     if let Some(oct) = raw.strip_prefix("0o") {
         return !oct.is_empty() && oct.bytes().all(|b| (b'0'..=b'7').contains(&b));
     }
+    // Core 1.2 int grammar is `[-+]? [0-9]+`, so a leading `+` is valid here.
+    // (The JSON schema's stricter no-`+` rule is handled in resolve_json.)
     let body = raw.strip_prefix(['+', '-']).unwrap_or(raw);
     !body.is_empty() && body.bytes().all(|b| b.is_ascii_digit())
 }
@@ -74,6 +76,8 @@ fn parse_core_float(raw: &str) -> Option<f64> {
     if !has_dot_or_exp {
         return None;
     }
+    // Core 1.2 floats permit a leading `+` and a leading-dot form like `.5`;
+    // `f64::parse` is the final arbiter of structural validity.
     let allowed =
         |b: u8| b.is_ascii_digit() || matches!(b, b'.' | b'e' | b'E' | b'+' | b'-');
     if !raw.bytes().all(allowed) {
@@ -162,5 +166,24 @@ mod tests {
             core("99999999999999999999999"),
             ValueData::String(_)
         ));
+    }
+
+    #[test]
+    fn core_plus_prefix_is_spec_compliant() {
+        // YAML 1.2 Core int/float grammars both allow a leading `+`.
+        assert!(matches!(core("+42"), ValueData::Int(42)));
+        assert!(matches!(core("+0"), ValueData::Int(0)));
+        assert!(matches!(core("+1.0"), ValueData::Float(f) if f == 1.0));
+        assert!(matches!(core("+1e2"), ValueData::Float(f) if f == 100.0));
+    }
+
+    #[test]
+    fn core_malformed_numbers_are_strings() {
+        // Structurally invalid: f64::parse / int-shape reject these -> String.
+        assert!(matches!(core("1+2"), ValueData::String(_)));
+        assert!(matches!(core("+-1.0"), ValueData::String(_)));
+        assert!(matches!(core("1e"), ValueData::String(_)));
+        assert!(matches!(core("0x"), ValueData::String(_)));
+        assert!(matches!(core("0o8"), ValueData::String(_)));
     }
 }
