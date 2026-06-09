@@ -2,9 +2,11 @@
 
 mod error;
 mod meta;
+mod value;
 
 pub use error::{Error, ErrorKind, Position, Result, Span};
 pub use meta::{Comments, Meta, ScalarStyle};
+pub use value::{Mapping, Value, ValueData};
 
 #[cfg(test)]
 mod smoke {
