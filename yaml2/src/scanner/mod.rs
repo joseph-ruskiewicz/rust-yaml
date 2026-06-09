@@ -97,6 +97,12 @@ impl<'a> Scanner<'a> {
     /// Scans a content token starting at character `c`.
     fn scan_content(&mut self, c: char, start: Position) -> Result<Token> {
         match c {
+            '-' if self.marker_ahead("---") => {
+                Ok(self.scan_marker(TokenKind::DocumentStart, start))
+            }
+            '.' if self.marker_ahead("...") => {
+                Ok(self.scan_marker(TokenKind::DocumentEnd, start))
+            }
             '[' => Ok(self.single_char(TokenKind::FlowSequenceStart, start)),
             ']' => Ok(self.single_char(TokenKind::FlowSequenceEnd, start)),
             '{' => Ok(self.single_char(TokenKind::FlowMappingStart, start)),
@@ -111,6 +117,26 @@ impl<'a> Scanner<'a> {
             _ => Err(Error::new(ErrorKind::Scan, format!("unexpected character {c:?}"))
                 .with_span(Span::new(start, self.reader.position()))),
         }
+    }
+
+    /// True if the input begins with `marker` followed by whitespace, a line
+    /// break, or end-of-input.
+    fn marker_ahead(&self, marker: &str) -> bool {
+        if !self.reader.starts_with(marker) {
+            return false;
+        }
+        matches!(
+            self.reader.peek_nth(marker.len()),
+            None | Some(' ') | Some('\t') | Some('\n') | Some('\r')
+        )
+    }
+
+    /// Consumes a three-character document marker.
+    fn scan_marker(&mut self, kind: TokenKind, start: Position) -> Token {
+        for _ in 0..3 {
+            self.reader.advance();
+        }
+        Token::new(kind, Span::new(start, self.reader.position()))
     }
 
     /// Consumes one character and produces a token spanning it.
@@ -208,6 +234,44 @@ mod tests {
                 TokenKind::FlowMappingStart,
                 TokenKind::Value,
                 TokenKind::FlowMappingEnd,
+                TokenKind::StreamEnd,
+            ]
+        );
+    }
+
+    #[test]
+    fn document_start_and_end_markers() {
+        assert_eq!(
+            kinds("---\n...\n"),
+            vec![
+                TokenKind::StreamStart,
+                TokenKind::DocumentStart,
+                TokenKind::DocumentEnd,
+                TokenKind::StreamEnd,
+            ]
+        );
+    }
+
+    #[test]
+    fn document_start_at_eof() {
+        assert_eq!(
+            kinds("---"),
+            vec![
+                TokenKind::StreamStart,
+                TokenKind::DocumentStart,
+                TokenKind::StreamEnd,
+            ]
+        );
+    }
+
+    #[test]
+    fn triple_dash_followed_by_content_is_marker_then_token() {
+        assert_eq!(
+            kinds("--- ["),
+            vec![
+                TokenKind::StreamStart,
+                TokenKind::DocumentStart,
+                TokenKind::FlowSequenceStart,
                 TokenKind::StreamEnd,
             ]
         );
