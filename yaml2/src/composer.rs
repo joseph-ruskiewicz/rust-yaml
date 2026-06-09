@@ -222,6 +222,7 @@ fn count_nodes(value: &Value) -> usize {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::options::Limits;
 
     fn parse(input: &str) -> Value {
         crate::api::parse(input).unwrap()
@@ -375,5 +376,50 @@ mod tests {
         // `*a` in the second document must not see the first document's anchor.
         let err = crate::api::parse_documents("--- &a 1\n--- *a\n").unwrap_err();
         assert_eq!(err.kind(), crate::error::ErrorKind::Compose);
+    }
+
+    #[test]
+    fn aliases_within_budget_succeed() {
+        // Two aliases of a 2-element sequence: well under the default budget.
+        let v = parse("base: &b [1, 2]\nx: *b\ny: *b\n");
+        assert!(v.as_mapping().unwrap().get(&key("y")).is_some());
+    }
+
+    #[test]
+    fn nested_alias_expansion_exceeds_small_budget() {
+        // Classic billion-laughs shape: each level references the previous one
+        // several times, so materialized node count explodes.
+        let input = "\
+a: &a [x, x, x, x, x]
+b: &b [*a, *a, *a, *a, *a]
+c: &c [*b, *b, *b, *b, *b]
+d: &d [*c, *c, *c, *c, *c]
+e: [*d, *d, *d, *d, *d]
+";
+        let opts = ParseOptions {
+            limits: Limits {
+                max_aliases: 1_000,
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        let err = crate::api::parse_with(input, &opts).unwrap_err();
+        assert_eq!(err.kind(), crate::error::ErrorKind::LimitExceeded);
+    }
+
+    #[test]
+    fn generous_budget_allows_the_same_input() {
+        let input = "\
+a: &a [x, x]
+b: [*a, *a]
+";
+        let opts = ParseOptions {
+            limits: Limits {
+                max_aliases: 1_000_000,
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        assert!(crate::api::parse_with(input, &opts).is_ok());
     }
 }
