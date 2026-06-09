@@ -256,6 +256,15 @@ impl Mapping {
     }
 }
 
+impl IntoIterator for Mapping {
+    type Item = (Value, Value);
+    type IntoIter = indexmap::map::IntoIter<Value, Value>;
+
+    fn into_iter(self) -> Self::IntoIter {
+        self.entries.into_iter()
+    }
+}
+
 impl Value {
     pub fn is_null(&self) -> bool {
         matches!(self.data, ValueData::Null)
@@ -519,5 +528,16 @@ mod tests {
 
         let quoted = Value::from_scalar("true", ScalarStyle::SingleQuoted, Schema::Core1_2);
         assert_eq!(quoted.as_str(), Some("true"));
+    }
+
+    #[test]
+    fn mapping_into_iter_yields_entries_in_order() {
+        let mut m = Mapping::new();
+        m.insert(Value::string("a"), Value::int(1));
+        m.insert(Value::string("b"), Value::int(2));
+        let collected: Vec<(Value, Value)> = m.into_iter().collect();
+        assert_eq!(collected.len(), 2);
+        assert_eq!(collected[0].0, Value::string("a"));
+        assert_eq!(collected[1].1, Value::int(2));
     }
 }

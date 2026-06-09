@@ -64,6 +64,20 @@ impl std::error::Error for Error {}
 /// Convenience alias used throughout the crate.
 pub type Result<T> = std::result::Result<T, Error>;
 
+#[cfg(feature = "serde")]
+impl serde::ser::Error for Error {
+    fn custom<T: fmt::Display>(msg: T) -> Self {
+        Error::new(ErrorKind::Compose, msg.to_string())
+    }
+}
+
+#[cfg(feature = "serde")]
+impl serde::de::Error for Error {
+    fn custom<T: fmt::Display>(msg: T) -> Self {
+        Error::new(ErrorKind::Compose, msg.to_string())
+    }
+}
+
 /// A location in the source: byte offset (0-based), line and column (1-based).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Position {
@@ -149,5 +163,13 @@ mod tests {
         let e = Error::new(ErrorKind::Scan, "bad indent").with_span(span);
         assert_eq!(e.to_string(), "bad indent at line 2 column 1");
         assert_eq!(e.span(), Some(span));
+    }
+
+    #[cfg(feature = "serde")]
+    #[test]
+    fn serde_custom_error_is_compose() {
+        let e = <Error as serde::de::Error>::custom("boom");
+        assert_eq!(e.kind(), ErrorKind::Compose);
+        assert_eq!(e.message(), "boom");
     }
 }
