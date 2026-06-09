@@ -30,7 +30,7 @@ pub struct Value {
 /// two mappings with the same entries in a different key order are considered
 /// distinct. This is deliberate — this crate preserves key order as meaningful
 /// data (for round-tripping), so a reordering is a different document. (`eq` and
-/// `hash` remain mutually consistent.) Insert/lookup methods are added in a later task.
+/// `hash` remain mutually consistent.)
 #[derive(Debug, Clone, Default)]
 pub struct Mapping {
     entries: IndexMap<Value, Value>,
@@ -257,6 +257,85 @@ impl Mapping {
     }
 }
 
+impl Value {
+    pub fn is_null(&self) -> bool {
+        matches!(self.data, ValueData::Null)
+    }
+
+    pub fn as_bool(&self) -> Option<bool> {
+        match self.data {
+            ValueData::Bool(b) => Some(b),
+            _ => None,
+        }
+    }
+
+    pub fn as_int(&self) -> Option<i64> {
+        match self.data {
+            ValueData::Int(i) => Some(i),
+            _ => None,
+        }
+    }
+
+    pub fn as_float(&self) -> Option<f64> {
+        match self.data {
+            ValueData::Float(f) => Some(f),
+            ValueData::Int(i) => Some(i as f64),
+            _ => None,
+        }
+    }
+
+    pub fn as_str(&self) -> Option<&str> {
+        match &self.data {
+            ValueData::String(s) => Some(s),
+            _ => None,
+        }
+    }
+
+    pub fn as_sequence(&self) -> Option<&[Value]> {
+        match &self.data {
+            ValueData::Sequence(s) => Some(s),
+            _ => None,
+        }
+    }
+
+    pub fn as_mapping(&self) -> Option<&Mapping> {
+        match &self.data {
+            ValueData::Mapping(m) => Some(m),
+            _ => None,
+        }
+    }
+}
+
+impl From<bool> for Value {
+    fn from(b: bool) -> Self {
+        Value::bool(b)
+    }
+}
+
+impl From<i64> for Value {
+    fn from(i: i64) -> Self {
+        Value::int(i)
+    }
+}
+
+impl From<f64> for Value {
+    fn from(f: f64) -> Self {
+        Value::float(f)
+    }
+}
+
+impl From<&str> for Value {
+    fn from(s: &str) -> Self {
+        Value::string(s)
+    }
+}
+
+impl From<String> for Value {
+    fn from(s: String) -> Self {
+        Value::string(s)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -359,5 +438,35 @@ mod tests {
                 _ => panic!("not a string"),
             }
         }
+    }
+
+    #[test]
+    fn accessors_return_typed_views() {
+        assert!(Value::null().is_null());
+        assert_eq!(Value::bool(true).as_bool(), Some(true));
+        assert_eq!(Value::int(5).as_int(), Some(5));
+        assert_eq!(Value::int(5).as_float(), Some(5.0));
+        assert_eq!(Value::float(1.5).as_float(), Some(1.5));
+        assert_eq!(Value::string("x").as_str(), Some("x"));
+        assert_eq!(Value::int(5).as_str(), None);
+    }
+
+    #[test]
+    fn sequence_and_mapping_accessors() {
+        let seq = Value::sequence(vec![Value::int(1), Value::int(2)]);
+        assert_eq!(seq.as_sequence().unwrap().len(), 2);
+
+        let mut m = Mapping::new();
+        m.insert(Value::string("k"), Value::int(1));
+        let map = Value::mapping(m);
+        assert_eq!(map.as_mapping().unwrap().len(), 1);
+    }
+
+    #[test]
+    fn from_conversions() {
+        assert_eq!(Value::from(true), Value::bool(true));
+        assert_eq!(Value::from(3_i64), Value::int(3));
+        assert_eq!(Value::from("s"), Value::string("s"));
+        assert_eq!(Value::from(String::from("s")), Value::string("s"));
     }
 }
