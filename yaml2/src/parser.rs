@@ -1408,6 +1408,124 @@ mod tests {
     }
 
     #[test]
+    fn realistic_document_events() {
+        let input = "name: Ada\njobs:\n  - lang: rust\n    years: 3\n  - lang: yaml\n";
+        assert_eq!(
+            kinds(input),
+            vec![
+                EventKind::StreamStart,
+                EventKind::DocumentStart,
+                EventKind::MappingStart {
+                    anchor: None,
+                    tag: None
+                },
+                EventKind::Scalar {
+                    value: "name".to_string(),
+                    style: ScalarStyle::Plain,
+                    anchor: None,
+                    tag: None
+                },
+                EventKind::Scalar {
+                    value: "Ada".to_string(),
+                    style: ScalarStyle::Plain,
+                    anchor: None,
+                    tag: None
+                },
+                EventKind::Scalar {
+                    value: "jobs".to_string(),
+                    style: ScalarStyle::Plain,
+                    anchor: None,
+                    tag: None
+                },
+                EventKind::SequenceStart {
+                    anchor: None,
+                    tag: None
+                },
+                EventKind::MappingStart {
+                    anchor: None,
+                    tag: None
+                },
+                EventKind::Scalar {
+                    value: "lang".to_string(),
+                    style: ScalarStyle::Plain,
+                    anchor: None,
+                    tag: None
+                },
+                EventKind::Scalar {
+                    value: "rust".to_string(),
+                    style: ScalarStyle::Plain,
+                    anchor: None,
+                    tag: None
+                },
+                EventKind::Scalar {
+                    value: "years".to_string(),
+                    style: ScalarStyle::Plain,
+                    anchor: None,
+                    tag: None
+                },
+                EventKind::Scalar {
+                    value: "3".to_string(),
+                    style: ScalarStyle::Plain,
+                    anchor: None,
+                    tag: None
+                },
+                EventKind::MappingEnd,
+                EventKind::MappingStart {
+                    anchor: None,
+                    tag: None
+                },
+                EventKind::Scalar {
+                    value: "lang".to_string(),
+                    style: ScalarStyle::Plain,
+                    anchor: None,
+                    tag: None
+                },
+                EventKind::Scalar {
+                    value: "yaml".to_string(),
+                    style: ScalarStyle::Plain,
+                    anchor: None,
+                    tag: None
+                },
+                EventKind::MappingEnd,
+                EventKind::SequenceEnd,
+                EventKind::MappingEnd,
+                EventKind::DocumentEnd,
+                EventKind::StreamEnd,
+            ]
+        );
+    }
+
+    #[test]
+    fn block_scalar_value_event() {
+        assert_eq!(
+            kinds("text: |\n  a\n  b\n"),
+            vec![
+                EventKind::StreamStart,
+                EventKind::DocumentStart,
+                EventKind::MappingStart {
+                    anchor: None,
+                    tag: None
+                },
+                EventKind::Scalar {
+                    value: "text".to_string(),
+                    style: ScalarStyle::Plain,
+                    anchor: None,
+                    tag: None
+                },
+                EventKind::Scalar {
+                    value: "a\nb\n".to_string(),
+                    style: ScalarStyle::Literal,
+                    anchor: None,
+                    tag: None
+                },
+                EventKind::MappingEnd,
+                EventKind::DocumentEnd,
+                EventKind::StreamEnd,
+            ]
+        );
+    }
+
+    #[test]
     fn unexpected_document_level_token_errors_without_hanging() {
         let err = parse_events("]", &ParseOptions::default()).unwrap_err();
         assert_eq!(err.kind(), crate::error::ErrorKind::Parse);
