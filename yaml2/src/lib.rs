@@ -4,6 +4,7 @@ mod error;
 mod meta;
 mod options;
 mod scalar;
+mod scanner;
 mod value;
 
 pub use error::{Error, ErrorKind, Position, Result, Span};
