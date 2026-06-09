@@ -12,6 +12,12 @@ mod scalar;
 mod scanner;
 mod value;
 
+#[cfg(feature = "serde")]
+mod serde_support;
+
+#[cfg(feature = "serde")]
+pub use serde_support::to_value;
+
 pub use api::{
     parse, parse_documents, parse_documents_with, parse_with, to_string, to_string_documents,
     to_string_documents_with, to_string_with,
