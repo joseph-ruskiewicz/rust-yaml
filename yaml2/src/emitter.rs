@@ -412,4 +412,11 @@ tags: [x, y, z]
     fn deeply_nested_roundtrips() {
         roundtrip("a:\n  b:\n    c:\n      - 1\n      - d: e\n");
     }
+
+    #[test]
+    fn multiline_plain_roundtrips() {
+        // The folded value re-emits (as a single line) and re-parses to the same value.
+        roundtrip("summary: line one\n  line two\n");
+        roundtrip("text: para one\n\n  para two\n");
+    }
 }

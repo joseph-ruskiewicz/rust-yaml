@@ -728,6 +728,39 @@ job:
     }
 
     #[test]
+    fn multiline_plain_value_composes_folded() {
+        let v = parse("summary: line one\n  line two\n");
+        let m = v.as_mapping().unwrap();
+        assert_eq!(
+            m.get(&key("summary")).unwrap().as_str(),
+            Some("line one line two")
+        );
+    }
+
+    #[test]
+    fn multiline_plain_blank_line_becomes_newline() {
+        let v = parse("text: para one\n\n  para two\n");
+        assert_eq!(
+            v.as_mapping().unwrap().get(&key("text")).unwrap().as_str(),
+            Some("para one\npara two")
+        );
+    }
+
+    #[test]
+    fn multiline_plain_root_document() {
+        assert_eq!(parse("one\ntwo\nthree\n").as_str(), Some("one two three"));
+    }
+
+    #[test]
+    fn multiline_plain_in_flow_sequence_composes() {
+        let v = parse("[one\n two, three]\n");
+        let items = v.as_sequence().unwrap();
+        assert_eq!(items.len(), 2);
+        assert_eq!(items[0].as_str(), Some("one two"));
+        assert_eq!(items[1].as_str(), Some("three"));
+    }
+
+    #[test]
     fn schema_changes_scalar_typing() {
         // Under Yaml1_1, "yes" is a bool; under Core it is a string.
         let yes_core = parse("yes\n");
