@@ -8,6 +8,7 @@ mod reader;
 mod token;
 
 use crate::error::{Error, ErrorKind, Position, Result, Span};
+use crate::meta::ScalarStyle;
 use crate::options::Limits;
 
 pub(crate) use reader::Reader;
@@ -114,8 +115,43 @@ impl<'a> Scanner<'a> {
             '?' if self.indicator_terminator_next() => {
                 Ok(self.single_char(TokenKind::Key, start))
             }
+            '\'' => self.scan_single_quoted(start),
             _ => Err(Error::new(ErrorKind::Scan, format!("unexpected character {c:?}"))
                 .with_span(Span::new(start, self.reader.position()))),
+        }
+    }
+
+    fn scan_single_quoted(&mut self, start: Position) -> Result<Token> {
+        self.reader.advance(); // opening quote
+        let mut value = String::new();
+        loop {
+            match self.reader.peek() {
+                None => {
+                    return Err(Error::new(
+                        ErrorKind::Scan,
+                        "unterminated single-quoted scalar",
+                    )
+                    .with_span(Span::new(start, self.reader.position())));
+                }
+                Some('\'') => {
+                    self.reader.advance(); // consume the quote
+                    if self.reader.peek() == Some('\'') {
+                        // Doubled '' -> literal single quote.
+                        self.reader.advance();
+                        value.push('\'');
+                    } else {
+                        // Closing quote.
+                        return Ok(Token::new(
+                            TokenKind::Scalar { value, style: ScalarStyle::SingleQuoted },
+                            Span::new(start, self.reader.position()),
+                        ));
+                    }
+                }
+                Some(c) => {
+                    self.reader.advance();
+                    value.push(c);
+                }
+            }
         }
     }
 
@@ -166,6 +202,7 @@ impl<'a> Scanner<'a> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::meta::ScalarStyle;
     use crate::options::Limits;
 
     fn kinds(input: &str) -> Vec<TokenKind> {
@@ -282,5 +319,38 @@ mod tests {
         let toks = tokenize("", Limits::default()).unwrap();
         assert_eq!(toks[0].span.start, crate::error::Position::new(0, 1, 1));
         assert_eq!(toks[0].span.end, crate::error::Position::new(0, 1, 1));
+    }
+
+    fn scalars(input: &str) -> Vec<(String, ScalarStyle)> {
+        tokenize(input, Limits::default())
+            .unwrap()
+            .into_iter()
+            .filter_map(|t| match t.kind {
+                TokenKind::Scalar { value, style } => Some((value, style)),
+                _ => None,
+            })
+            .collect()
+    }
+
+    #[test]
+    fn single_quoted_basic() {
+        assert_eq!(
+            scalars("'hello world'"),
+            vec![("hello world".to_string(), ScalarStyle::SingleQuoted)]
+        );
+    }
+
+    #[test]
+    fn single_quoted_doubled_quote_is_literal_quote() {
+        assert_eq!(
+            scalars("'it''s'"),
+            vec![("it's".to_string(), ScalarStyle::SingleQuoted)]
+        );
+    }
+
+    #[test]
+    fn unterminated_single_quote_errors() {
+        let err = tokenize("'oops", Limits::default()).unwrap_err();
+        assert_eq!(err.kind(), crate::error::ErrorKind::Scan);
     }
 }
