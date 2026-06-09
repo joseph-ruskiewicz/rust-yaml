@@ -101,6 +101,7 @@ impl ParserState {
         }
 
         loop {
+            let pos_before = self.pos;
             match self.peek() {
                 None | Some(TokenKind::StreamEnd) => {
                     let span = self.span();
@@ -126,6 +127,11 @@ impl ParserState {
                     self.parse_document_content()?;
                     self.finish_document();
                 }
+            }
+            // No-progress guard: if an iteration consumed no token, the parser
+            // would loop forever allocating events. Reject instead.
+            if self.pos == pos_before {
+                return Err(self.error("unexpected token at document level"));
             }
         }
         Ok(())
@@ -539,5 +545,11 @@ mod tests {
                 EventKind::StreamEnd,
             ]
         );
+    }
+
+    #[test]
+    fn unexpected_document_level_token_errors_without_hanging() {
+        let err = parse_events("]", &ParseOptions::default()).unwrap_err();
+        assert_eq!(err.kind(), crate::error::ErrorKind::Parse);
     }
 }
