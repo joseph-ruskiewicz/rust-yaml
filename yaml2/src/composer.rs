@@ -16,6 +16,7 @@ pub(crate) fn compose(events: &[Event], options: &ParseOptions) -> Result<Vec<Va
         options,
         anchors: HashMap::new(),
         alias_nodes: 0,
+        merge_enabled: options.merge_keys.enabled_for(options.schema),
     };
     composer.compose_stream()
 }
@@ -29,6 +30,7 @@ struct Composer<'a> {
     anchors: HashMap<String, Value>,
     /// Running count of nodes materialized via alias expansion (billion-laughs guard).
     alias_nodes: usize,
+    merge_enabled: bool,
 }
 
 impl Composer<'_> {
@@ -150,22 +152,39 @@ impl Composer<'_> {
 
     fn compose_mapping(&mut self, anchor: Option<String>, _tag: Option<String>) -> Result<Value> {
         let mut map = Mapping::new();
+        // Merge sources, in source order; applied after all explicit keys.
+        let mut merges: Vec<Mapping> = Vec::new();
         loop {
             match self.peek() {
                 Some(EventKind::MappingEnd) => {
                     self.bump()?;
                     break;
                 }
-                Some(_) => {
-                    let k = self.compose_node()?;
-                    let val = self.compose_node()?;
-                    map.insert(k, val);
-                }
                 None => {
                     return Err(Error::new(
                         ErrorKind::Compose,
                         "unterminated mapping in event stream",
                     ))
+                }
+                Some(_) => {
+                    if self.merge_enabled && self.peek_is_merge_key() {
+                        let span = self.events[self.pos].span;
+                        self.bump()?; // consume the `<<` key event
+                        let value = self.compose_node()?;
+                        self.collect_merge_sources(value, &mut merges, span)?;
+                    } else {
+                        let k = self.compose_node()?;
+                        let val = self.compose_node()?;
+                        map.insert(k, val);
+                    }
+                }
+            }
+        }
+        // Apply merges: explicit keys (and earlier sources) win.
+        for source in merges {
+            for (k, v) in source.iter() {
+                if !map.contains_key(k) {
+                    map.insert(k.clone(), v.clone());
                 }
             }
         }
@@ -174,6 +193,47 @@ impl Composer<'_> {
             self.anchors.insert(name, value.clone());
         }
         Ok(value)
+    }
+
+    /// True if the next event is a plain, untagged `<<` scalar key.
+    fn peek_is_merge_key(&self) -> bool {
+        match self.events.get(self.pos).map(|e| &e.kind) {
+            Some(EventKind::Scalar {
+                value,
+                style: ScalarStyle::Plain,
+                tag: None,
+                anchor: None,
+            }) => value == "<<",
+            _ => false,
+        }
+    }
+
+    /// Flattens a merge value into ordered mapping sources. The value is a
+    /// mapping, or a sequence of mappings.
+    fn collect_merge_sources(
+        &self,
+        value: Value,
+        merges: &mut Vec<Mapping>,
+        span: Span,
+    ) -> Result<()> {
+        match value.into_data() {
+            ValueData::Mapping(m) => merges.push(m),
+            ValueData::Sequence(items) => {
+                for item in items {
+                    match item.into_data() {
+                        ValueData::Mapping(m) => merges.push(m),
+                        _ => return Err(self.error(span, "merge sequence entry must be a mapping")),
+                    }
+                }
+            }
+            _ => {
+                return Err(self.error(
+                    span,
+                    "merge value must be a mapping or a sequence of mappings",
+                ))
+            }
+        }
+        Ok(())
     }
 
     fn resolve_alias(&mut self, name: &str, span: Span) -> Result<Value> {
@@ -283,7 +343,7 @@ fn typed(raw: &str) -> ValueData {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::options::Limits;
+    use crate::options::{Limits, MergeKeys};
 
     fn parse(input: &str) -> Value {
         crate::api::parse(input).unwrap()
@@ -367,6 +427,98 @@ mod tests {
 
     fn key(s: &str) -> Value {
         Value::string(s)
+    }
+
+    fn parse_merge(input: &str) -> Value {
+        // Merge keys on, Core scalar resolution (numbers resolve plainly).
+        let opts = ParseOptions {
+            merge_keys: MergeKeys::On,
+            ..Default::default()
+        };
+        crate::api::parse_with(input, &opts).unwrap()
+    }
+
+    #[test]
+    fn merge_pulls_in_anchor_entries() {
+        let input = "\
+base: &b
+  a: 1
+  b: 2
+derived:
+  <<: *b
+  c: 3
+";
+        let m = parse_merge(input);
+        let d = m.as_mapping().unwrap().get(&key("derived")).unwrap();
+        let d = d.as_mapping().unwrap();
+        assert_eq!(d.len(), 3);
+        assert_eq!(d.get(&key("a")).unwrap().as_int(), Some(1));
+        assert_eq!(d.get(&key("b")).unwrap().as_int(), Some(2));
+        assert_eq!(d.get(&key("c")).unwrap().as_int(), Some(3));
+        assert!(!d.contains_key(&key("<<")));
+    }
+
+    #[test]
+    fn explicit_key_overrides_merged() {
+        let input = "\
+base: &b
+  a: 1
+  b: 2
+derived:
+  <<: *b
+  b: 99
+";
+        let m = parse_merge(input);
+        let d = m.as_mapping().unwrap().get(&key("derived")).unwrap();
+        let d = d.as_mapping().unwrap();
+        assert_eq!(d.get(&key("b")).unwrap().as_int(), Some(99));
+        assert_eq!(d.get(&key("a")).unwrap().as_int(), Some(1));
+    }
+
+    #[test]
+    fn merge_sequence_earlier_source_wins() {
+        let input = "\
+one: &one {a: 1, x: 10}
+two: &two {a: 2, y: 20}
+merged:
+  <<: [*one, *two]
+";
+        let m = parse_merge(input);
+        let d = m.as_mapping().unwrap().get(&key("merged")).unwrap();
+        let d = d.as_mapping().unwrap();
+        // `a` present in both; earlier source (*one) wins.
+        assert_eq!(d.get(&key("a")).unwrap().as_int(), Some(1));
+        assert_eq!(d.get(&key("x")).unwrap().as_int(), Some(10));
+        assert_eq!(d.get(&key("y")).unwrap().as_int(), Some(20));
+    }
+
+    #[test]
+    fn merge_disabled_keeps_literal_key() {
+        // Default options: Core schema, merge keys Auto -> off.
+        let v = parse("<<: {a: 1}\nb: 2\n");
+        let m = v.as_mapping().unwrap();
+        assert!(m.contains_key(&key("<<")));
+        assert_eq!(m.len(), 2);
+    }
+
+    #[test]
+    fn quoted_merge_key_is_literal_even_when_enabled() {
+        let v = parse_merge("\"<<\": 5\nb: 2\n");
+        let m = v.as_mapping().unwrap();
+        assert!(m.contains_key(&key("<<")));
+        assert_eq!(m.get(&key("<<")).unwrap().as_int(), Some(5));
+    }
+
+    #[test]
+    fn merge_non_mapping_value_is_error() {
+        let err = {
+            let opts = ParseOptions {
+                merge_keys: MergeKeys::On,
+                ..Default::default()
+            };
+            crate::api::parse_with("<<: 5\n", &opts).unwrap_err()
+        };
+        assert_eq!(err.kind(), crate::error::ErrorKind::Compose);
     }
 
     #[test]
