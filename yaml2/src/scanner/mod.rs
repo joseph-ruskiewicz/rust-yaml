@@ -7,6 +7,8 @@
 mod reader;
 mod token;
 
+use std::collections::VecDeque;
+
 use crate::error::{Error, ErrorKind, Position, Result, Span};
 use crate::meta::ScalarStyle;
 use crate::options::Limits;
@@ -28,9 +30,32 @@ pub(crate) fn tokenize(input: &str, limits: Limits) -> Result<Vec<Token>> {
 pub(crate) struct Scanner<'a> {
     reader: Reader<'a>,
     limits: Limits,
+    /// Produced tokens not yet returned by `next_token`.
+    tokens: VecDeque<Token>,
+    /// Count of tokens already returned by `next_token` (for simple-key indexing).
+    tokens_parsed: usize,
     started: bool,
-    finished: bool,
+    stream_end_produced: bool,
     flow_depth: usize,
+    /// Current block indentation as a 0-based column; -1 == root.
+    indent: i64,
+    /// Stack of enclosing block indentations.
+    indents: Vec<i64>,
+    /// Whether a block simple key may begin at the current position.
+    simple_key_allowed: bool,
+    /// A buffered potential block mapping key, if any.
+    simple_key: Option<SimpleKey>,
+}
+
+/// A buffered marker recording that a just-produced node might be a block
+/// mapping key, to be confirmed when a `:` is found on the same line.
+struct SimpleKey {
+    /// Index of the key's first token in the overall token stream.
+    token_number: usize,
+    /// Source position where the key starts.
+    mark: Position,
+    /// Line the key began on (a key must be resolved on the same line).
+    line: usize,
 }
 
 impl<'a> Scanner<'a> {
@@ -38,18 +63,38 @@ impl<'a> Scanner<'a> {
         Self {
             reader: Reader::new(input),
             limits,
+            tokens: VecDeque::new(),
+            tokens_parsed: 0,
             started: false,
-            finished: false,
+            stream_end_produced: false,
             flow_depth: 0,
+            indent: -1,
+            indents: Vec::new(),
+            simple_key_allowed: true,
+            simple_key: None,
         }
     }
 
     /// Returns the next token, or `None` once the stream has ended.
     pub(crate) fn next_token(&mut self) -> Result<Option<Token>> {
+        loop {
+            if let Some(token) = self.tokens.pop_front() {
+                self.tokens_parsed += 1;
+                return Ok(Some(token));
+            }
+            if self.stream_end_produced {
+                return Ok(None);
+            }
+            self.fetch_more_tokens()?;
+        }
+    }
+
+    /// Produces one or more tokens into the queue.
+    fn fetch_more_tokens(&mut self) -> Result<()> {
         if !self.started {
             self.started = true;
             if self.reader.input_len() > self.limits.max_input_bytes {
-                self.finished = true;
+                self.stream_end_produced = true;
                 let pos = Position::new(0, 1, 1);
                 return Err(Error::new(
                     ErrorKind::LimitExceeded,
@@ -58,27 +103,25 @@ impl<'a> Scanner<'a> {
                 .with_span(Span::new(pos, pos)));
             }
             let pos = self.reader.position();
-            return Ok(Some(Token::new(
-                TokenKind::StreamStart,
-                Span::new(pos, pos),
-            )));
-        }
-
-        if self.finished {
-            return Ok(None);
+            self.tokens
+                .push_back(Token::new(TokenKind::StreamStart, Span::new(pos, pos)));
+            return Ok(());
         }
 
         self.skip_to_next_token();
         let start = self.reader.position();
         match self.reader.peek() {
             None => {
-                self.finished = true;
-                Ok(Some(Token::new(
-                    TokenKind::StreamEnd,
-                    Span::new(start, start),
-                )))
+                self.tokens
+                    .push_back(Token::new(TokenKind::StreamEnd, Span::new(start, start)));
+                self.stream_end_produced = true;
+                Ok(())
             }
-            Some(c) => self.scan_content(c, start).map(Some),
+            Some(c) => {
+                let token = self.scan_content(c, start)?;
+                self.tokens.push_back(token);
+                Ok(())
+            }
         }
     }
 
