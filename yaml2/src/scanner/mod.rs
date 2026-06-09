@@ -1277,10 +1277,34 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "P3.6 concern: actual stream differs, awaiting adjudication"]
     fn sequence_under_mapping_key() {
+        // Indentless sequence: the `-` entries are at the same column as the
+        // `items` key, so NO BlockSequenceStart envelope is emitted (the parser
+        // treats bare BlockEntry tokens after Value as an indentless sequence).
         assert_eq!(
             kinds("items:\n- a\n- b\n"),
+            vec![
+                TokenKind::StreamStart,
+                TokenKind::BlockMappingStart,
+                TokenKind::Key,
+                TokenKind::Scalar { value: "items".to_string(), style: ScalarStyle::Plain },
+                TokenKind::Value,
+                TokenKind::BlockEntry,
+                TokenKind::Scalar { value: "a".to_string(), style: ScalarStyle::Plain },
+                TokenKind::BlockEntry,
+                TokenKind::Scalar { value: "b".to_string(), style: ScalarStyle::Plain },
+                TokenKind::BlockEnd,
+                TokenKind::StreamEnd,
+            ]
+        );
+    }
+
+    #[test]
+    fn indented_sequence_under_mapping_key_has_envelope() {
+        // When the sequence is MORE indented than the key, it DOES get a
+        // BlockSequenceStart/BlockEnd envelope.
+        assert_eq!(
+            kinds("items:\n  - a\n  - b\n"),
             vec![
                 TokenKind::StreamStart,
                 TokenKind::BlockMappingStart,
