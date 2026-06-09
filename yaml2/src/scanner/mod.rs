@@ -109,9 +109,18 @@ impl<'a> Scanner<'a> {
         }
 
         self.skip_to_next_token();
+
+        // Block context: process indentation at the start of a line.
+        if self.flow_depth == 0 {
+            self.unroll_indent(Self::col0(self.reader.position()));
+        }
+
         let start = self.reader.position();
         match self.reader.peek() {
             None => {
+                if self.flow_depth == 0 {
+                    self.unroll_indent(-1);
+                }
                 self.tokens
                     .push_back(Token::new(TokenKind::StreamEnd, Span::new(start, start)));
                 self.stream_end_produced = true;
@@ -430,6 +439,52 @@ impl<'a> Scanner<'a> {
     fn single_char(&mut self, kind: TokenKind, start: Position) -> Token {
         self.reader.advance();
         Token::new(kind, Span::new(start, self.reader.position()))
+    }
+
+    /// 0-based indentation column for a position.
+    fn col0(pos: Position) -> i64 {
+        pos.column as i64 - 1
+    }
+
+    /// Closes block levels deeper than `col`, emitting one `BlockEnd` each.
+    /// Inert in flow context.
+    fn unroll_indent(&mut self, col: i64) {
+        if self.flow_depth > 0 {
+            return;
+        }
+        while self.indent > col {
+            let pos = self.reader.position();
+            self.tokens
+                .push_back(Token::new(TokenKind::BlockEnd, Span::new(pos, pos)));
+            self.indent = self.indents.pop().unwrap_or(-1);
+        }
+    }
+
+    /// Opens a new block level at `col`, inserting `start_kind` at queue index
+    /// `at` (or appending if `None`). Returns true if a level was opened.
+    /// Inert in flow context.
+    fn roll_indent(
+        &mut self,
+        col: i64,
+        start_kind: TokenKind,
+        mark: Position,
+        at: Option<usize>,
+    ) -> bool {
+        if self.flow_depth > 0 {
+            return false;
+        }
+        if self.indent < col {
+            self.indents.push(self.indent);
+            self.indent = col;
+            let token = Token::new(start_kind, Span::new(mark, mark));
+            match at {
+                Some(i) => self.tokens.insert(i, token),
+                None => self.tokens.push_back(token),
+            }
+            true
+        } else {
+            false
+        }
     }
 
     /// True if the character after the current one is whitespace, a line break,
@@ -986,5 +1041,23 @@ mod tests {
         // Outside flow, `:` only acts as a value indicator with a following
         // terminator. `:x` at root is a plain scalar starting with a colon.
         assert_eq!(scalars(":x"), vec![(":x".to_string(), ScalarStyle::Plain)]);
+    }
+
+    #[test]
+    fn bare_scalar_document_still_works() {
+        assert_eq!(
+            kinds("hello"),
+            vec![
+                TokenKind::StreamStart,
+                TokenKind::Scalar { value: "hello".to_string(), style: ScalarStyle::Plain },
+                TokenKind::StreamEnd,
+            ]
+        );
+    }
+
+    #[test]
+    fn block_indent_helpers_unroll_to_root_at_eof() {
+        let toks = tokenize("hello\n", Limits::default()).unwrap();
+        assert!(!toks.iter().any(|t| t.kind == TokenKind::BlockEnd));
     }
 }
