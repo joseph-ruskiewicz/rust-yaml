@@ -46,6 +46,7 @@ impl<'a> Scanner<'a> {
         if !self.started {
             self.started = true;
             if self.reader.input_len() > self.limits.max_input_bytes {
+                self.finished = true;
                 let pos = Position::new(0, 1, 1);
                 return Err(Error::new(
                     ErrorKind::LimitExceeded,
@@ -93,11 +94,46 @@ impl<'a> Scanner<'a> {
         }
     }
 
-    /// Scans a content token starting at character `c`. Arms for the various
-    /// token kinds are added in later tasks; until then anything is an error.
+    /// Scans a content token starting at character `c`.
     fn scan_content(&mut self, c: char, start: Position) -> Result<Token> {
-        Err(Error::new(ErrorKind::Scan, format!("unexpected character {c:?}"))
-            .with_span(Span::new(start, self.reader.position())))
+        match c {
+            '[' => Ok(self.single_char(TokenKind::FlowSequenceStart, start)),
+            ']' => Ok(self.single_char(TokenKind::FlowSequenceEnd, start)),
+            '{' => Ok(self.single_char(TokenKind::FlowMappingStart, start)),
+            '}' => Ok(self.single_char(TokenKind::FlowMappingEnd, start)),
+            ',' => Ok(self.single_char(TokenKind::FlowEntry, start)),
+            ':' if self.indicator_terminator_next() => {
+                Ok(self.single_char(TokenKind::Value, start))
+            }
+            '?' if self.indicator_terminator_next() => {
+                Ok(self.single_char(TokenKind::Key, start))
+            }
+            _ => Err(Error::new(ErrorKind::Scan, format!("unexpected character {c:?}"))
+                .with_span(Span::new(start, self.reader.position()))),
+        }
+    }
+
+    /// Consumes one character and produces a token spanning it.
+    fn single_char(&mut self, kind: TokenKind, start: Position) -> Token {
+        self.reader.advance();
+        Token::new(kind, Span::new(start, self.reader.position()))
+    }
+
+    /// True if the character after the current one is whitespace, a line break,
+    /// a flow indicator, or end-of-input — i.e. `:`/`?` act as indicators.
+    fn indicator_terminator_next(&self) -> bool {
+        matches!(
+            self.reader.peek_nth(1),
+            None | Some(' ')
+                | Some('\t')
+                | Some('\n')
+                | Some('\r')
+                | Some(',')
+                | Some('[')
+                | Some(']')
+                | Some('{')
+                | Some('}')
+        )
     }
 }
 
@@ -132,6 +168,49 @@ mod tests {
         let limits = Limits { max_input_bytes: 4, ..Limits::default() };
         let err = tokenize("abcdef", limits).unwrap_err();
         assert_eq!(err.kind(), crate::error::ErrorKind::LimitExceeded);
+    }
+
+    #[test]
+    fn flow_collection_indicators() {
+        assert_eq!(
+            kinds("[]{}"),
+            vec![
+                TokenKind::StreamStart,
+                TokenKind::FlowSequenceStart,
+                TokenKind::FlowSequenceEnd,
+                TokenKind::FlowMappingStart,
+                TokenKind::FlowMappingEnd,
+                TokenKind::StreamEnd,
+            ]
+        );
+    }
+
+    #[test]
+    fn flow_entry_and_value_and_key() {
+        assert_eq!(
+            kinds(", : ?"),
+            vec![
+                TokenKind::StreamStart,
+                TokenKind::FlowEntry,
+                TokenKind::Value,
+                TokenKind::Key,
+                TokenKind::StreamEnd,
+            ]
+        );
+    }
+
+    #[test]
+    fn value_indicator_before_flow_end() {
+        assert_eq!(
+            kinds("{:}"),
+            vec![
+                TokenKind::StreamStart,
+                TokenKind::FlowMappingStart,
+                TokenKind::Value,
+                TokenKind::FlowMappingEnd,
+                TokenKind::StreamEnd,
+            ]
+        );
     }
 
     #[test]
