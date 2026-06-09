@@ -185,9 +185,17 @@ impl<'a> Scanner<'a> {
     fn scan_content(&mut self, c: char, start: Position) -> Result<Token> {
         match c {
             '-' if self.marker_ahead("---") => {
+                self.unroll_indent(-1);
+                self.remove_simple_key();
+                self.simple_key_allowed = true;
                 Ok(self.scan_marker(TokenKind::DocumentStart, start))
             }
-            '.' if self.marker_ahead("...") => Ok(self.scan_marker(TokenKind::DocumentEnd, start)),
+            '.' if self.marker_ahead("...") => {
+                self.unroll_indent(-1);
+                self.remove_simple_key();
+                self.simple_key_allowed = true;
+                Ok(self.scan_marker(TokenKind::DocumentEnd, start))
+            }
             '[' => {
                 self.flow_depth += 1;
                 Ok(self.single_char(TokenKind::FlowSequenceStart, start))
@@ -1415,6 +1423,73 @@ mod tests {
                 TokenKind::Scalar { value: "foo".to_string(), style: ScalarStyle::Plain },
                 TokenKind::Value,
                 TokenKind::Scalar { value: "bar".to_string(), style: ScalarStyle::Plain },
+                TokenKind::BlockEnd,
+                TokenKind::StreamEnd,
+            ]
+        );
+    }
+
+    #[test]
+    fn block_mapping_with_comments_and_blanks() {
+        let input = "# header\na: 1\n\n# mid\nb: 2\n";
+        assert_eq!(
+            kinds(input),
+            vec![
+                TokenKind::StreamStart,
+                TokenKind::BlockMappingStart,
+                TokenKind::Key,
+                TokenKind::Scalar { value: "a".to_string(), style: ScalarStyle::Plain },
+                TokenKind::Value,
+                TokenKind::Scalar { value: "1".to_string(), style: ScalarStyle::Plain },
+                TokenKind::Key,
+                TokenKind::Scalar { value: "b".to_string(), style: ScalarStyle::Plain },
+                TokenKind::Value,
+                TokenKind::Scalar { value: "2".to_string(), style: ScalarStyle::Plain },
+                TokenKind::BlockEnd,
+                TokenKind::StreamEnd,
+            ]
+        );
+    }
+
+    #[test]
+    fn mapping_value_is_flow_collection() {
+        assert_eq!(
+            kinds("nums: [1, 2]\n"),
+            vec![
+                TokenKind::StreamStart,
+                TokenKind::BlockMappingStart,
+                TokenKind::Key,
+                TokenKind::Scalar { value: "nums".to_string(), style: ScalarStyle::Plain },
+                TokenKind::Value,
+                TokenKind::FlowSequenceStart,
+                TokenKind::Scalar { value: "1".to_string(), style: ScalarStyle::Plain },
+                TokenKind::FlowEntry,
+                TokenKind::Scalar { value: "2".to_string(), style: ScalarStyle::Plain },
+                TokenKind::FlowSequenceEnd,
+                TokenKind::BlockEnd,
+                TokenKind::StreamEnd,
+            ]
+        );
+    }
+
+    #[test]
+    fn document_marker_resets_block_indent() {
+        assert_eq!(
+            kinds("a: 1\n---\nb: 2\n"),
+            vec![
+                TokenKind::StreamStart,
+                TokenKind::BlockMappingStart,
+                TokenKind::Key,
+                TokenKind::Scalar { value: "a".to_string(), style: ScalarStyle::Plain },
+                TokenKind::Value,
+                TokenKind::Scalar { value: "1".to_string(), style: ScalarStyle::Plain },
+                TokenKind::BlockEnd,
+                TokenKind::DocumentStart,
+                TokenKind::BlockMappingStart,
+                TokenKind::Key,
+                TokenKind::Scalar { value: "b".to_string(), style: ScalarStyle::Plain },
+                TokenKind::Value,
+                TokenKind::Scalar { value: "2".to_string(), style: ScalarStyle::Plain },
                 TokenKind::BlockEnd,
                 TokenKind::StreamEnd,
             ]
