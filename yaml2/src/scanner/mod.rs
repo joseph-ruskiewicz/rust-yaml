@@ -463,6 +463,12 @@ impl<'a> Scanner<'a> {
                         ));
                     }
                 }
+                Some('\n') | Some('\r') => {
+                    let trimmed = value.trim_end_matches([' ', '\t']).len();
+                    value.truncate(trimmed);
+                    let folded = self.scan_flow_folded_breaks();
+                    value.push_str(&folded);
+                }
                 Some(c) => {
                     self.reader.advance();
                     value.push(c);
@@ -2287,6 +2293,38 @@ mod tests {
         assert_eq!(
             one_scalar("\"a\\\n   b\""),
             ("ab".to_string(), ScalarStyle::DoubleQuoted)
+        );
+    }
+
+    #[test]
+    fn single_quoted_multiline_folds_to_space() {
+        assert_eq!(
+            one_scalar("'a\nb'"),
+            ("a b".to_string(), ScalarStyle::SingleQuoted)
+        );
+    }
+
+    #[test]
+    fn single_quoted_multiline_trims_whitespace() {
+        assert_eq!(
+            one_scalar("'a  \n  b'"),
+            ("a b".to_string(), ScalarStyle::SingleQuoted)
+        );
+    }
+
+    #[test]
+    fn single_quoted_blank_line_becomes_newline() {
+        assert_eq!(
+            one_scalar("'a\n\nb'"),
+            ("a\nb".to_string(), ScalarStyle::SingleQuoted)
+        );
+    }
+
+    #[test]
+    fn single_quoted_doubled_quote_still_works_multiline() {
+        assert_eq!(
+            one_scalar("'it''s\nok'"),
+            ("it's ok".to_string(), ScalarStyle::SingleQuoted)
         );
     }
 }
