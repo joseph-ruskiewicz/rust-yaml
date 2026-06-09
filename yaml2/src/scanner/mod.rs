@@ -188,6 +188,9 @@ impl<'a> Scanner<'a> {
             '&' => self.scan_anchor_or_alias(start, true),
             '*' => self.scan_anchor_or_alias(start, false),
             '!' => Ok(self.scan_tag(start)),
+            '-' if self.flow_depth == 0 && self.block_entry_next() => {
+                self.fetch_block_entry(start)
+            }
             _ => self.scan_plain(start),
         }
     }
@@ -476,6 +479,9 @@ impl<'a> Scanner<'a> {
         if self.indent < col {
             self.indents.push(self.indent);
             self.indent = col;
+            if let Some(i) = at {
+                debug_assert!(i <= self.tokens.len(), "roll_indent insert index out of range");
+            }
             let token = Token::new(start_kind, Span::new(mark, mark));
             match at {
                 Some(i) => self.tokens.insert(i, token),
@@ -485,6 +491,24 @@ impl<'a> Scanner<'a> {
         } else {
             false
         }
+    }
+
+    /// True if the char after `-` makes it a block entry indicator.
+    fn block_entry_next(&self) -> bool {
+        matches!(
+            self.reader.peek_nth(1),
+            None | Some(' ') | Some('\t') | Some('\n') | Some('\r')
+        )
+    }
+
+    /// Handles a `-` block sequence entry: opens a sequence if needed, emits
+    /// `BlockEntry`, and consumes the dash.
+    fn fetch_block_entry(&mut self, start: Position) -> Result<Token> {
+        let col = Self::col0(start);
+        self.roll_indent(col, TokenKind::BlockSequenceStart, start, None);
+        self.reader.advance(); // consume '-'
+        self.simple_key_allowed = true;
+        Ok(Token::new(TokenKind::BlockEntry, Span::new(start, self.reader.position())))
     }
 
     /// True if the character after the current one is whitespace, a line break,
@@ -1059,5 +1083,40 @@ mod tests {
     fn block_indent_helpers_unroll_to_root_at_eof() {
         let toks = tokenize("hello\n", Limits::default()).unwrap();
         assert!(!toks.iter().any(|t| t.kind == TokenKind::BlockEnd));
+    }
+
+    #[test]
+    fn simple_block_sequence() {
+        assert_eq!(
+            kinds("- a\n- b\n"),
+            vec![
+                TokenKind::StreamStart,
+                TokenKind::BlockSequenceStart,
+                TokenKind::BlockEntry,
+                TokenKind::Scalar { value: "a".to_string(), style: ScalarStyle::Plain },
+                TokenKind::BlockEntry,
+                TokenKind::Scalar { value: "b".to_string(), style: ScalarStyle::Plain },
+                TokenKind::BlockEnd,
+                TokenKind::StreamEnd,
+            ]
+        );
+    }
+
+    #[test]
+    fn nested_block_sequence() {
+        assert_eq!(
+            kinds("- - a\n"),
+            vec![
+                TokenKind::StreamStart,
+                TokenKind::BlockSequenceStart,
+                TokenKind::BlockEntry,
+                TokenKind::BlockSequenceStart,
+                TokenKind::BlockEntry,
+                TokenKind::Scalar { value: "a".to_string(), style: ScalarStyle::Plain },
+                TokenKind::BlockEnd,
+                TokenKind::BlockEnd,
+                TokenKind::StreamEnd,
+            ]
+        );
     }
 }
