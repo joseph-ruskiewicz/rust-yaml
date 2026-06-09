@@ -212,6 +212,7 @@ impl ParserState {
                 Ok(())
             }
             Some(TokenKind::BlockSequenceStart) => self.parse_block_sequence(anchor, tag),
+            Some(TokenKind::BlockMappingStart) => self.parse_block_mapping(anchor, tag),
             _ => {
                 // Implicit empty (null) node — carries any collected properties.
                 self.emit(
@@ -249,6 +250,51 @@ impl ParserState {
                     return Ok(());
                 }
                 _ => return Err(self.error("expected a block sequence entry or end")),
+            }
+        }
+    }
+
+    fn parse_block_mapping(
+        &mut self,
+        anchor: Option<String>,
+        tag: Option<String>,
+    ) -> Result<()> {
+        let start = self.bump(); // BlockMappingStart
+        self.emit(EventKind::MappingStart { anchor, tag }, start.span);
+        loop {
+            match self.peek() {
+                Some(TokenKind::Key) => {
+                    self.bump();
+                    // Key node (empty if directly followed by Value/Key/BlockEnd).
+                    if matches!(
+                        self.peek(),
+                        Some(TokenKind::Value) | Some(TokenKind::Key) | Some(TokenKind::BlockEnd)
+                    ) {
+                        self.emit_empty_scalar();
+                    } else {
+                        self.parse_node()?;
+                    }
+                    // Value node.
+                    if matches!(self.peek(), Some(TokenKind::Value)) {
+                        self.bump();
+                        if matches!(
+                            self.peek(),
+                            Some(TokenKind::Key) | Some(TokenKind::BlockEnd)
+                        ) {
+                            self.emit_empty_scalar();
+                        } else {
+                            self.parse_node()?;
+                        }
+                    } else {
+                        self.emit_empty_scalar();
+                    }
+                }
+                Some(TokenKind::BlockEnd) => {
+                    let end = self.bump();
+                    self.emit(EventKind::MappingEnd, end.span);
+                    return Ok(());
+                }
+                _ => return Err(self.error("expected a block mapping key or end")),
             }
         }
     }
@@ -374,6 +420,64 @@ mod tests {
                 EventKind::SequenceStart { anchor: None, tag: None },
                 EventKind::Scalar { value: "a".to_string(), style: ScalarStyle::Plain, anchor: None, tag: None },
                 EventKind::SequenceEnd,
+                EventKind::SequenceEnd,
+                EventKind::DocumentEnd,
+                EventKind::StreamEnd,
+            ]
+        );
+    }
+
+    #[test]
+    fn block_mapping() {
+        assert_eq!(
+            kinds("a: 1\nb: 2\n"),
+            vec![
+                EventKind::StreamStart,
+                EventKind::DocumentStart,
+                EventKind::MappingStart { anchor: None, tag: None },
+                EventKind::Scalar { value: "a".to_string(), style: ScalarStyle::Plain, anchor: None, tag: None },
+                EventKind::Scalar { value: "1".to_string(), style: ScalarStyle::Plain, anchor: None, tag: None },
+                EventKind::Scalar { value: "b".to_string(), style: ScalarStyle::Plain, anchor: None, tag: None },
+                EventKind::Scalar { value: "2".to_string(), style: ScalarStyle::Plain, anchor: None, tag: None },
+                EventKind::MappingEnd,
+                EventKind::DocumentEnd,
+                EventKind::StreamEnd,
+            ]
+        );
+    }
+
+    #[test]
+    fn nested_block_mapping() {
+        assert_eq!(
+            kinds("outer:\n  inner: v\n"),
+            vec![
+                EventKind::StreamStart,
+                EventKind::DocumentStart,
+                EventKind::MappingStart { anchor: None, tag: None },
+                EventKind::Scalar { value: "outer".to_string(), style: ScalarStyle::Plain, anchor: None, tag: None },
+                EventKind::MappingStart { anchor: None, tag: None },
+                EventKind::Scalar { value: "inner".to_string(), style: ScalarStyle::Plain, anchor: None, tag: None },
+                EventKind::Scalar { value: "v".to_string(), style: ScalarStyle::Plain, anchor: None, tag: None },
+                EventKind::MappingEnd,
+                EventKind::MappingEnd,
+                EventKind::DocumentEnd,
+                EventKind::StreamEnd,
+            ]
+        );
+    }
+
+    #[test]
+    fn mapping_in_sequence_entry() {
+        assert_eq!(
+            kinds("- k: v\n"),
+            vec![
+                EventKind::StreamStart,
+                EventKind::DocumentStart,
+                EventKind::SequenceStart { anchor: None, tag: None },
+                EventKind::MappingStart { anchor: None, tag: None },
+                EventKind::Scalar { value: "k".to_string(), style: ScalarStyle::Plain, anchor: None, tag: None },
+                EventKind::Scalar { value: "v".to_string(), style: ScalarStyle::Plain, anchor: None, tag: None },
+                EventKind::MappingEnd,
                 EventKind::SequenceEnd,
                 EventKind::DocumentEnd,
                 EventKind::StreamEnd,
