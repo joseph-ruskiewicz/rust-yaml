@@ -43,6 +43,15 @@ impl<'a> Reader<'a> {
         self.input[self.offset..].chars().nth(n)
     }
 
+    /// Counts the run of ASCII space (`' '`) characters at the current position,
+    /// without consuming. O(k) in the number of leading spaces.
+    pub(crate) fn count_leading_spaces(&self) -> usize {
+        self.input[self.offset..]
+            .bytes()
+            .take_while(|&b| b == b' ')
+            .count()
+    }
+
     /// Whether the remaining input begins with `prefix`.
     pub(crate) fn starts_with(&self, prefix: &str) -> bool {
         self.input[self.offset..].starts_with(prefix)
@@ -172,5 +181,15 @@ mod tests {
         assert_eq!(r.peek_nth(3), None);
         assert!(r.starts_with("abc"));
         assert!(!r.starts_with("abd"));
+    }
+
+    #[test]
+    fn count_leading_spaces_counts_run() {
+        let r = Reader::new("   abc");
+        assert_eq!(r.count_leading_spaces(), 3);
+        let r2 = Reader::new("noskip");
+        assert_eq!(r2.count_leading_spaces(), 0);
+        let r3 = Reader::new("");
+        assert_eq!(r3.count_leading_spaces(), 0);
     }
 }

@@ -799,10 +799,7 @@ impl<'a> Scanner<'a> {
 
         let mut lines: Vec<(String, bool)> = Vec::new();
         loop {
-            let mut sp = 0usize;
-            while self.reader.peek_nth(sp) == Some(' ') {
-                sp += 1;
-            }
+            let sp = self.reader.count_leading_spaces();
             let after = self.reader.peek_nth(sp);
             if after.is_none() {
                 break;
@@ -2425,5 +2422,16 @@ mod tests {
             one_scalar("|\r\n  a\r\n  b\r\n"),
             ("a\nb\n".to_string(), ScalarStyle::Literal)
         );
+    }
+
+    #[test]
+    fn block_scalar_huge_leading_space_run_is_linear() {
+        // 100k leading spaces — must complete quickly (O(n), not O(n^2)).
+        let spaces = " ".repeat(100_000);
+        let input = format!("|\n{spaces}x\n");
+        let (value, style) = one_scalar(&input);
+        assert_eq!(style, ScalarStyle::Literal);
+        // Auto-detected content indent is 100_000, so "x" is the content.
+        assert_eq!(value, "x\n");
     }
 }
