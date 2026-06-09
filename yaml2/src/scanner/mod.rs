@@ -117,6 +117,9 @@ impl<'a> Scanner<'a> {
             }
             '\'' => self.scan_single_quoted(start),
             '"' => self.scan_double_quoted(start),
+            '&' => self.scan_anchor_or_alias(start, true),
+            '*' => self.scan_anchor_or_alias(start, false),
+            '!' => Ok(self.scan_tag(start)),
             _ => self.scan_plain(start),
         }
     }
@@ -157,6 +160,49 @@ impl<'a> Scanner<'a> {
             TokenKind::Scalar { value, style: ScalarStyle::Plain },
             Span::new(start, self.reader.position()),
         ))
+    }
+
+    /// Scans `&name` (anchor) or `*name` (alias). `is_anchor` selects which.
+    fn scan_anchor_or_alias(&mut self, start: Position, is_anchor: bool) -> Result<Token> {
+        self.reader.advance(); // '&' or '*'
+        let name = self.take_name();
+        if name.is_empty() {
+            let what = if is_anchor { "anchor" } else { "alias" };
+            return Err(Error::new(ErrorKind::Scan, format!("empty {what} name"))
+                .with_span(Span::new(start, self.reader.position())));
+        }
+        let kind = if is_anchor {
+            TokenKind::Anchor(name)
+        } else {
+            TokenKind::Alias(name)
+        };
+        Ok(Token::new(kind, Span::new(start, self.reader.position())))
+    }
+
+    /// Scans a tag token, keeping the raw text including the leading `!`.
+    fn scan_tag(&mut self, start: Position) -> Token {
+        self.reader.advance(); // leading '!'
+        let mut text = String::from("!");
+        // A second '!' is part of the handle (e.g. `!!str`).
+        if self.reader.peek() == Some('!') {
+            self.reader.advance();
+            text.push('!');
+        }
+        text.push_str(&self.take_name());
+        Token::new(TokenKind::Tag(text), Span::new(start, self.reader.position()))
+    }
+
+    /// Consumes a run of name characters (non-whitespace, non-flow-indicator).
+    fn take_name(&mut self) -> String {
+        let mut name = String::new();
+        while let Some(c) = self.reader.peek() {
+            if c.is_whitespace() || matches!(c, ',' | '[' | ']' | '{' | '}') {
+                break;
+            }
+            self.reader.advance();
+            name.push(c);
+        }
+        name
     }
 
     fn scan_single_quoted(&mut self, start: Position) -> Result<Token> {
@@ -611,5 +657,54 @@ mod tests {
                 TokenKind::StreamEnd,
             ]
         );
+    }
+
+    #[test]
+    fn anchor_alias_tag() {
+        assert_eq!(
+            kinds("&a *b !c"),
+            vec![
+                TokenKind::StreamStart,
+                TokenKind::Anchor("a".to_string()),
+                TokenKind::Alias("b".to_string()),
+                TokenKind::Tag("!c".to_string()),
+                TokenKind::StreamEnd,
+            ]
+        );
+    }
+
+    #[test]
+    fn anchored_value_in_flow() {
+        assert_eq!(
+            kinds("[&x 1, *x]"),
+            vec![
+                TokenKind::StreamStart,
+                TokenKind::FlowSequenceStart,
+                TokenKind::Anchor("x".to_string()),
+                TokenKind::Scalar { value: "1".to_string(), style: ScalarStyle::Plain },
+                TokenKind::FlowEntry,
+                TokenKind::Alias("x".to_string()),
+                TokenKind::FlowSequenceEnd,
+                TokenKind::StreamEnd,
+            ]
+        );
+    }
+
+    #[test]
+    fn double_bang_tag() {
+        assert_eq!(
+            kinds("!!str"),
+            vec![
+                TokenKind::StreamStart,
+                TokenKind::Tag("!!str".to_string()),
+                TokenKind::StreamEnd,
+            ]
+        );
+    }
+
+    #[test]
+    fn empty_anchor_name_errors() {
+        let err = tokenize("& ", Limits::default()).unwrap_err();
+        assert_eq!(err.kind(), crate::error::ErrorKind::Scan);
     }
 }
