@@ -6,7 +6,7 @@ use crate::error::{Error, ErrorKind, Result, Span};
 use crate::event::{Event, EventKind};
 use crate::meta::ScalarStyle;
 use crate::options::ParseOptions;
-use crate::value::{Mapping, Value};
+use crate::value::{Mapping, Value, ValueData};
 
 /// Composes a validated event stream into one `Value` per document.
 pub(crate) fn compose(events: &[Event], options: &ParseOptions) -> Result<Vec<Value>> {
@@ -28,7 +28,6 @@ struct Composer<'a> {
     /// Anchor name -> composed value, valid within the current document.
     anchors: HashMap<String, Value>,
     /// Running count of nodes materialized via alias expansion (billion-laughs guard).
-    #[allow(dead_code)] // read once alias resolution lands (Task 4)
     alias_nodes: usize,
 }
 
@@ -117,6 +116,7 @@ impl Composer<'_> {
             }
             EventKind::SequenceStart { anchor, tag } => self.compose_sequence(anchor, tag),
             EventKind::MappingStart { anchor, tag } => self.compose_mapping(anchor, tag),
+            EventKind::Alias(name) => self.resolve_alias(&name, event.span),
             other => Err(Error::new(
                 ErrorKind::Compose,
                 format!("unexpected event while composing a node: {other:?}"),
@@ -176,6 +176,22 @@ impl Composer<'_> {
         Ok(value)
     }
 
+    fn resolve_alias(&mut self, name: &str, span: Span) -> Result<Value> {
+        let value = self
+            .anchors
+            .get(name)
+            .cloned()
+            .ok_or_else(|| self.error(span, format!("unknown anchor '{name}'")))?;
+        self.alias_nodes += count_nodes(&value);
+        if self.alias_nodes > self.options.limits.max_aliases {
+            return Err(
+                Error::new(ErrorKind::LimitExceeded, "alias expansion limit exceeded")
+                    .with_span(span),
+            );
+        }
+        Ok(value)
+    }
+
     /// Resolves a scalar event into a typed `Value`. Untagged scalars use the
     /// configured schema; tagged scalars are handled in Task 6.
     fn resolve_scalar(
@@ -187,6 +203,19 @@ impl Composer<'_> {
     ) -> Result<Value> {
         let _ = tag; // tag handling added in Task 6
         Ok(Value::from_scalar(raw, style, self.options.schema))
+    }
+}
+
+/// Counts the nodes in a value tree (the node itself plus all descendants).
+/// Used to budget alias expansion against `Limits::max_aliases`.
+fn count_nodes(value: &Value) -> usize {
+    1 + match value.data() {
+        ValueData::Sequence(items) => items.iter().map(count_nodes).sum(),
+        ValueData::Mapping(map) => map
+            .iter()
+            .map(|(k, v)| count_nodes(k) + count_nodes(v))
+            .sum(),
+        _ => 0,
     }
 }
 
@@ -316,5 +345,35 @@ mod tests {
         let m = v.as_mapping().unwrap();
         assert_eq!(m.len(), 1);
         assert_eq!(m.get(&key("a")).unwrap().as_int(), Some(2));
+    }
+
+    #[test]
+    fn alias_clones_scalar_anchor() {
+        let v = parse("first: &a 7\nsecond: *a\n");
+        let m = v.as_mapping().unwrap();
+        assert_eq!(m.get(&key("first")).unwrap().as_int(), Some(7));
+        assert_eq!(m.get(&key("second")).unwrap().as_int(), Some(7));
+    }
+
+    #[test]
+    fn alias_clones_collection_anchor() {
+        let v = parse("a: &seq [1, 2]\nb: *seq\n");
+        let m = v.as_mapping().unwrap();
+        let b = m.get(&key("b")).unwrap().as_sequence().unwrap();
+        assert_eq!(b.len(), 2);
+        assert_eq!(b[1].as_int(), Some(2));
+    }
+
+    #[test]
+    fn unknown_alias_is_compose_error() {
+        let err = crate::api::parse("*missing\n").unwrap_err();
+        assert_eq!(err.kind(), crate::error::ErrorKind::Compose);
+    }
+
+    #[test]
+    fn anchors_do_not_leak_across_documents() {
+        // `*a` in the second document must not see the first document's anchor.
+        let err = crate::api::parse_documents("--- &a 1\n--- *a\n").unwrap_err();
+        assert_eq!(err.kind(), crate::error::ErrorKind::Compose);
     }
 }
