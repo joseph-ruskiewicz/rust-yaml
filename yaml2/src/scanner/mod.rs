@@ -30,6 +30,7 @@ pub(crate) struct Scanner<'a> {
     limits: Limits,
     started: bool,
     finished: bool,
+    flow_depth: usize,
 }
 
 impl<'a> Scanner<'a> {
@@ -39,6 +40,7 @@ impl<'a> Scanner<'a> {
             limits,
             started: false,
             finished: false,
+            flow_depth: 0,
         }
     }
 
@@ -108,12 +110,24 @@ impl<'a> Scanner<'a> {
                 Ok(self.scan_marker(TokenKind::DocumentStart, start))
             }
             '.' if self.marker_ahead("...") => Ok(self.scan_marker(TokenKind::DocumentEnd, start)),
-            '[' => Ok(self.single_char(TokenKind::FlowSequenceStart, start)),
-            ']' => Ok(self.single_char(TokenKind::FlowSequenceEnd, start)),
-            '{' => Ok(self.single_char(TokenKind::FlowMappingStart, start)),
-            '}' => Ok(self.single_char(TokenKind::FlowMappingEnd, start)),
+            '[' => {
+                self.flow_depth += 1;
+                Ok(self.single_char(TokenKind::FlowSequenceStart, start))
+            }
+            ']' => {
+                self.flow_depth = self.flow_depth.saturating_sub(1);
+                Ok(self.single_char(TokenKind::FlowSequenceEnd, start))
+            }
+            '{' => {
+                self.flow_depth += 1;
+                Ok(self.single_char(TokenKind::FlowMappingStart, start))
+            }
+            '}' => {
+                self.flow_depth = self.flow_depth.saturating_sub(1);
+                Ok(self.single_char(TokenKind::FlowMappingEnd, start))
+            }
             ',' => Ok(self.single_char(TokenKind::FlowEntry, start)),
-            ':' if self.indicator_terminator_next() => {
+            ':' if self.flow_depth > 0 || self.indicator_terminator_next() => {
                 Ok(self.single_char(TokenKind::Value, start))
             }
             '?' if self.indicator_terminator_next() => Ok(self.single_char(TokenKind::Key, start)),
@@ -853,5 +867,81 @@ mod tests {
         // Span must end right after 'a' (offset 1, col 2), NOT after the space.
         assert_eq!(scalar_a.span.start, crate::error::Position::new(0, 1, 1));
         assert_eq!(scalar_a.span.end, crate::error::Position::new(1, 1, 2));
+    }
+
+    #[test]
+    fn compact_json_flow_mapping() {
+        assert_eq!(
+            kinds(r#"{"a":"b"}"#),
+            vec![
+                TokenKind::StreamStart,
+                TokenKind::FlowMappingStart,
+                TokenKind::Scalar {
+                    value: "a".to_string(),
+                    style: ScalarStyle::DoubleQuoted
+                },
+                TokenKind::Value,
+                TokenKind::Scalar {
+                    value: "b".to_string(),
+                    style: ScalarStyle::DoubleQuoted
+                },
+                TokenKind::FlowMappingEnd,
+                TokenKind::StreamEnd,
+            ]
+        );
+    }
+
+    #[test]
+    fn compact_json_nested() {
+        assert_eq!(
+            kinds(r#"{"k":[1,2]}"#),
+            vec![
+                TokenKind::StreamStart,
+                TokenKind::FlowMappingStart,
+                TokenKind::Scalar {
+                    value: "k".to_string(),
+                    style: ScalarStyle::DoubleQuoted
+                },
+                TokenKind::Value,
+                TokenKind::FlowSequenceStart,
+                TokenKind::Scalar {
+                    value: "1".to_string(),
+                    style: ScalarStyle::Plain
+                },
+                TokenKind::FlowEntry,
+                TokenKind::Scalar {
+                    value: "2".to_string(),
+                    style: ScalarStyle::Plain
+                },
+                TokenKind::FlowSequenceEnd,
+                TokenKind::FlowMappingEnd,
+                TokenKind::StreamEnd,
+            ]
+        );
+    }
+
+    #[test]
+    fn plain_colon_in_flow_sequence_stays_plain() {
+        // In flow, `a:b` (colon not followed by space/flow-char) is ONE plain scalar.
+        assert_eq!(
+            kinds("[a:b]"),
+            vec![
+                TokenKind::StreamStart,
+                TokenKind::FlowSequenceStart,
+                TokenKind::Scalar {
+                    value: "a:b".to_string(),
+                    style: ScalarStyle::Plain
+                },
+                TokenKind::FlowSequenceEnd,
+                TokenKind::StreamEnd,
+            ]
+        );
+    }
+
+    #[test]
+    fn root_colon_still_requires_terminator() {
+        // Outside flow, `:` only acts as a value indicator with a following
+        // terminator. `:x` at root is a plain scalar starting with a colon.
+        assert_eq!(scalars(":x"), vec![(":x".to_string(), ScalarStyle::Plain)]);
     }
 }
