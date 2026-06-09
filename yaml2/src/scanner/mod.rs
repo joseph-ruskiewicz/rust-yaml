@@ -1253,4 +1253,70 @@ mod tests {
             ]
         );
     }
+
+    #[test]
+    fn nested_mapping_value_on_following_lines() {
+        assert_eq!(
+            kinds("outer:\n  inner: v\n"),
+            vec![
+                TokenKind::StreamStart,
+                TokenKind::BlockMappingStart,
+                TokenKind::Key,
+                TokenKind::Scalar { value: "outer".to_string(), style: ScalarStyle::Plain },
+                TokenKind::Value,
+                TokenKind::BlockMappingStart,
+                TokenKind::Key,
+                TokenKind::Scalar { value: "inner".to_string(), style: ScalarStyle::Plain },
+                TokenKind::Value,
+                TokenKind::Scalar { value: "v".to_string(), style: ScalarStyle::Plain },
+                TokenKind::BlockEnd,
+                TokenKind::BlockEnd,
+                TokenKind::StreamEnd,
+            ]
+        );
+    }
+
+    #[test]
+    #[ignore = "P3.6 concern: actual stream differs, awaiting adjudication"]
+    fn sequence_under_mapping_key() {
+        assert_eq!(
+            kinds("items:\n- a\n- b\n"),
+            vec![
+                TokenKind::StreamStart,
+                TokenKind::BlockMappingStart,
+                TokenKind::Key,
+                TokenKind::Scalar { value: "items".to_string(), style: ScalarStyle::Plain },
+                TokenKind::Value,
+                TokenKind::BlockSequenceStart,
+                TokenKind::BlockEntry,
+                TokenKind::Scalar { value: "a".to_string(), style: ScalarStyle::Plain },
+                TokenKind::BlockEntry,
+                TokenKind::Scalar { value: "b".to_string(), style: ScalarStyle::Plain },
+                TokenKind::BlockEnd,
+                TokenKind::BlockEnd,
+                TokenKind::StreamEnd,
+            ]
+        );
+    }
+
+    #[test]
+    fn mapping_in_sequence_entry() {
+        assert_eq!(
+            kinds("- k: v\n"),
+            vec![
+                TokenKind::StreamStart,
+                TokenKind::BlockSequenceStart,
+                TokenKind::BlockEntry,
+                TokenKind::BlockMappingStart,
+                TokenKind::Key,
+                TokenKind::Scalar { value: "k".to_string(), style: ScalarStyle::Plain },
+                TokenKind::Value,
+                TokenKind::Scalar { value: "v".to_string(), style: ScalarStyle::Plain },
+                TokenKind::BlockEnd,
+                TokenKind::BlockEnd,
+                TokenKind::StreamEnd,
+            ]
+        );
+    }
+
 }
