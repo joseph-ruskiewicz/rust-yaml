@@ -2,7 +2,7 @@
 
 mod error;
 
-pub use error::{Position, Span};
+pub use error::{Error, ErrorKind, Position, Result, Span};
 
 #[cfg(test)]
 mod smoke {
