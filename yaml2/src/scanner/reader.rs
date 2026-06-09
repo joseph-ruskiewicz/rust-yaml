@@ -56,11 +56,10 @@ impl<'a> Reader<'a> {
                 self.column = 1;
             }
             '\r' => {
-                // CRLF: the following '\n' performs the line break.
-                // A lone CR is itself a line break.
-                if self.peek() == Some('\n') {
-                    self.column += 1;
-                } else {
+                // A lone CR is a line break. In a CRLF pair the CR is just the
+                // terminator prefix (no column change); the following '\n'
+                // performs the actual line break.
+                if self.peek() != Some('\n') {
                     self.line += 1;
                     self.column = 1;
                 }
@@ -131,6 +130,16 @@ mod tests {
         r.advance(); // \n
         assert_eq!(r.position(), Position::new(3, 2, 1));
         assert_eq!(r.peek(), Some('b'));
+    }
+
+    #[test]
+    fn lone_cr_at_eof_is_a_line_break() {
+        let mut r = Reader::new("a\r");
+        r.advance(); // a
+        r.advance(); // \r at EOF -> lone CR
+        assert_eq!(r.position().line, 2);
+        assert_eq!(r.position().column, 1);
+        assert!(r.is_eof());
     }
 
     #[test]
