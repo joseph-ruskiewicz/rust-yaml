@@ -213,6 +213,7 @@ impl ParserState {
             }
             Some(TokenKind::BlockSequenceStart) => self.parse_block_sequence(anchor, tag),
             Some(TokenKind::BlockMappingStart) => self.parse_block_mapping(anchor, tag),
+            Some(TokenKind::BlockEntry) => self.parse_indentless_sequence(anchor, tag),
             _ => {
                 // Implicit empty (null) node — carries any collected properties.
                 self.emit(
@@ -295,6 +296,41 @@ impl ParserState {
                     return Ok(());
                 }
                 _ => return Err(self.error("expected a block mapping key or end")),
+            }
+        }
+    }
+
+    /// Parses an indentless block sequence (bare `BlockEntry` tokens with no
+    /// `BlockSequenceStart`/`BlockEnd`). It ends when the next token is not a
+    /// `BlockEntry`.
+    fn parse_indentless_sequence(
+        &mut self,
+        anchor: Option<String>,
+        tag: Option<String>,
+    ) -> Result<()> {
+        let span = self.span();
+        self.emit(EventKind::SequenceStart { anchor, tag }, span);
+        loop {
+            match self.peek() {
+                Some(TokenKind::BlockEntry) => {
+                    self.bump();
+                    if matches!(
+                        self.peek(),
+                        Some(TokenKind::BlockEntry)
+                            | Some(TokenKind::Key)
+                            | Some(TokenKind::Value)
+                            | Some(TokenKind::BlockEnd)
+                    ) {
+                        self.emit_empty_scalar();
+                    } else {
+                        self.parse_node()?;
+                    }
+                }
+                _ => {
+                    let end_span = self.span();
+                    self.emit(EventKind::SequenceEnd, end_span);
+                    return Ok(());
+                }
             }
         }
     }
@@ -479,6 +515,26 @@ mod tests {
                 EventKind::Scalar { value: "v".to_string(), style: ScalarStyle::Plain, anchor: None, tag: None },
                 EventKind::MappingEnd,
                 EventKind::SequenceEnd,
+                EventKind::DocumentEnd,
+                EventKind::StreamEnd,
+            ]
+        );
+    }
+
+    #[test]
+    fn indentless_sequence_value() {
+        assert_eq!(
+            kinds("items:\n- a\n- b\n"),
+            vec![
+                EventKind::StreamStart,
+                EventKind::DocumentStart,
+                EventKind::MappingStart { anchor: None, tag: None },
+                EventKind::Scalar { value: "items".to_string(), style: ScalarStyle::Plain, anchor: None, tag: None },
+                EventKind::SequenceStart { anchor: None, tag: None },
+                EventKind::Scalar { value: "a".to_string(), style: ScalarStyle::Plain, anchor: None, tag: None },
+                EventKind::Scalar { value: "b".to_string(), style: ScalarStyle::Plain, anchor: None, tag: None },
+                EventKind::SequenceEnd,
+                EventKind::MappingEnd,
                 EventKind::DocumentEnd,
                 EventKind::StreamEnd,
             ]
