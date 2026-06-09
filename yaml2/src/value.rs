@@ -511,9 +511,6 @@ mod tests {
 
     #[test]
     fn from_scalar_resolves_per_schema() {
-        use crate::meta::ScalarStyle;
-        use crate::options::Schema;
-
         let core = Value::from_scalar("0777", ScalarStyle::Plain, Schema::Core1_2);
         assert_eq!(core.as_int(), Some(777));
 

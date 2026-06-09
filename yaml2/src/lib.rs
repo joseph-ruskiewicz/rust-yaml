@@ -2,14 +2,14 @@
 
 mod error;
 mod meta;
-mod value;
 mod options;
 mod scalar;
+mod value;
 
 pub use error::{Error, ErrorKind, Position, Result, Span};
 pub use meta::{Comments, Meta, ScalarStyle};
-pub use value::{Mapping, Value, ValueData};
 pub use options::{EmitOptions, Limits, MergeKeys, ParseOptions, Schema};
+pub use value::{Mapping, Value, ValueData};
 
 #[cfg(test)]
 mod smoke {

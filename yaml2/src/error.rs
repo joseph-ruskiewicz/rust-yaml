@@ -21,7 +21,11 @@ pub struct Error {
 
 impl Error {
     pub fn new(kind: ErrorKind, message: impl Into<String>) -> Self {
-        Self { kind, message: message.into(), span: None }
+        Self {
+            kind,
+            message: message.into(),
+            span: None,
+        }
     }
 
     pub fn with_span(mut self, span: Span) -> Self {
@@ -45,7 +49,11 @@ impl Error {
 impl fmt::Display for Error {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self.span {
-            Some(s) => write!(f, "{} at line {} column {}", self.message, s.start.line, s.start.column),
+            Some(s) => write!(
+                f,
+                "{} at line {} column {}",
+                self.message, s.start.line, s.start.column
+            ),
             None => write!(f, "{}", self.message),
         }
     }
@@ -66,12 +74,20 @@ pub struct Position {
 
 impl Position {
     pub fn new(offset: usize, line: usize, column: usize) -> Self {
-        Self { offset, line, column }
+        Self {
+            offset,
+            line,
+            column,
+        }
     }
 
     /// The position at the very start of any input.
     pub fn start() -> Self {
-        Self { offset: 0, line: 1, column: 1 }
+        Self {
+            offset: 0,
+            line: 1,
+            column: 1,
+        }
     }
 }
 

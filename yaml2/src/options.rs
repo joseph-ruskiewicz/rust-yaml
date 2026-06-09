@@ -79,7 +79,10 @@ impl Default for ParseOptions {
 impl ParseOptions {
     /// Default options with formatting preservation enabled (round-trip).
     pub fn preserve_formatting() -> Self {
-        Self { preserve_formatting: true, ..Self::default() }
+        Self {
+            preserve_formatting: true,
+            ..Self::default()
+        }
     }
 
     pub fn with_schema(mut self, schema: Schema) -> Self {
@@ -107,14 +110,20 @@ pub struct EmitOptions {
 
 impl Default for EmitOptions {
     fn default() -> Self {
-        Self { round_trip: false, indent: 2 }
+        Self {
+            round_trip: false,
+            indent: 2,
+        }
     }
 }
 
 impl EmitOptions {
     /// Default options with round-trip emission enabled.
     pub fn round_trip() -> Self {
-        Self { round_trip: true, ..Self::default() }
+        Self {
+            round_trip: true,
+            ..Self::default()
+        }
     }
 }
 
