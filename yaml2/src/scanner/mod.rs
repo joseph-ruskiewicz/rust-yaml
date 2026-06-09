@@ -121,6 +121,7 @@ impl<'a> Scanner<'a> {
         }
 
         self.skip_to_next_token();
+        self.stale_simple_key();
 
         // Block context: process indentation at the start of a line.
         if self.flow_depth == 0 {
@@ -144,6 +145,9 @@ impl<'a> Scanner<'a> {
                     self.save_simple_key(start);
                 }
                 let token = self.scan_content(c, start)?;
+                if self.flow_depth == 0 && Self::is_node_token(&token.kind) {
+                    self.simple_key_allowed = false;
+                }
                 self.tokens.push_back(token);
                 Ok(())
             }
@@ -236,6 +240,30 @@ impl<'a> Scanner<'a> {
     /// Drops any buffered simple key.
     fn remove_simple_key(&mut self) {
         self.simple_key = None;
+    }
+
+    /// Releases a buffered simple key once scanning has moved past its line.
+    /// A block simple key must be followed by `:` on its own line; otherwise the
+    /// buffered node was a plain value, not a key.
+    fn stale_simple_key(&mut self) {
+        if let Some(key) = &self.simple_key {
+            if key.line != self.reader.position().line {
+                self.simple_key = None;
+            }
+        }
+    }
+
+    /// Whether a token represents a content node (scalar/anchor/alias/tag).
+    /// After such a token at block level, a new simple key may not begin until
+    /// a structural event (newline, block entry) re-enables it.
+    fn is_node_token(kind: &TokenKind) -> bool {
+        matches!(
+            kind,
+            TokenKind::Scalar { .. }
+                | TokenKind::Anchor(_)
+                | TokenKind::Alias(_)
+                | TokenKind::Tag(_)
+        )
     }
 
     /// Whether `c` begins a node that could serve as a block mapping key
@@ -1337,6 +1365,56 @@ mod tests {
                 TokenKind::Value,
                 TokenKind::Scalar { value: "v".to_string(), style: ScalarStyle::Plain },
                 TokenKind::BlockEnd,
+                TokenKind::BlockEnd,
+                TokenKind::StreamEnd,
+            ]
+        );
+    }
+
+    #[test]
+    fn bare_scalar_is_not_a_key() {
+        assert_eq!(
+            kinds("hello\nworld\n"),
+            vec![
+                TokenKind::StreamStart,
+                TokenKind::Scalar { value: "hello".to_string(), style: ScalarStyle::Plain },
+                TokenKind::Scalar { value: "world".to_string(), style: ScalarStyle::Plain },
+                TokenKind::StreamEnd,
+            ]
+        );
+    }
+
+    #[test]
+    fn sequence_item_scalar_is_not_held_as_key() {
+        assert_eq!(
+            kinds("- a\n- b\n"),
+            vec![
+                TokenKind::StreamStart,
+                TokenKind::BlockSequenceStart,
+                TokenKind::BlockEntry,
+                TokenKind::Scalar { value: "a".to_string(), style: ScalarStyle::Plain },
+                TokenKind::BlockEntry,
+                TokenKind::Scalar { value: "b".to_string(), style: ScalarStyle::Plain },
+                TokenKind::BlockEnd,
+                TokenKind::StreamEnd,
+            ]
+        );
+    }
+
+    #[test]
+    fn anchored_key_is_framed_correctly() {
+        // `&a foo: bar` — the anchor is part of the KEY node, so Key must come
+        // BEFORE the anchor, not between the anchor and the scalar.
+        assert_eq!(
+            kinds("&a foo: bar\n"),
+            vec![
+                TokenKind::StreamStart,
+                TokenKind::BlockMappingStart,
+                TokenKind::Key,
+                TokenKind::Anchor("a".to_string()),
+                TokenKind::Scalar { value: "foo".to_string(), style: ScalarStyle::Plain },
+                TokenKind::Value,
+                TokenKind::Scalar { value: "bar".to_string(), style: ScalarStyle::Plain },
                 TokenKind::BlockEnd,
                 TokenKind::StreamEnd,
             ]
