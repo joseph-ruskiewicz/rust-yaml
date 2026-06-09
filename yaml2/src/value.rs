@@ -82,22 +82,18 @@ impl Value {
     }
 
     // Internal metadata plumbing. Public metadata accessors arrive in Task 7.
-    #[allow(dead_code)] // used in later tasks (and test helper in this task)
     pub(crate) fn set_meta_box(&mut self, meta: Option<Box<Meta>>) {
         self.meta = meta;
     }
 
-    #[allow(dead_code)] // used in later tasks
     pub(crate) fn meta_box(&self) -> Option<&Meta> {
         self.meta.as_deref()
     }
 
-    #[allow(dead_code)] // used in later tasks
     pub(crate) fn meta_box_mut(&mut self) -> &mut Box<Meta> {
         self.meta.get_or_insert_with(|| Box::new(Meta::default()))
     }
 
-    #[allow(dead_code)] // used in later tasks
     pub(crate) fn take_meta_box(&mut self) -> Option<Box<Meta>> {
         self.meta.take()
     }
@@ -276,6 +272,7 @@ impl Value {
         }
     }
 
+    /// Returns the value as `f64`. Integer values are widened to `f64`.
     pub fn as_float(&self) -> Option<f64> {
         match self.data {
             ValueData::Float(f) => Some(f),
@@ -336,6 +333,29 @@ impl From<String> for Value {
     }
 }
 
+impl Value {
+    /// Returns the formatting metadata if any has been attached.
+    pub fn meta(&self) -> Option<&Meta> {
+        self.meta_box()
+    }
+
+    /// Returns the metadata mutably, allocating an empty `Meta` on first access.
+    pub fn meta_mut(&mut self) -> &mut Meta {
+        self.meta_box_mut()
+    }
+
+    /// Attaches metadata, returning the value for chaining.
+    pub fn with_meta(mut self, meta: Meta) -> Self {
+        self.set_meta_box(Some(Box::new(meta)));
+        self
+    }
+
+    /// Removes and returns any attached metadata.
+    pub fn take_meta(&mut self) -> Option<Meta> {
+        self.take_meta_box().map(|b| *b)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -350,7 +370,8 @@ mod tests {
 
     #[test]
     fn equality_ignores_metadata() {
-        let a = Value::int(1).with_meta_for_test();
+        let mut a = Value::int(1);
+        a.meta_mut(); // force-allocate metadata
         let b = Value::int(1);
         assert_eq!(a, b);
     }
@@ -399,13 +420,6 @@ mod tests {
         assert_ne!(Value::mapping(m1), Value::mapping(m2));
     }
 
-    impl Value {
-        fn with_meta_for_test(mut self) -> Self {
-            self.set_meta_box(Some(Box::new(Meta::default())));
-            self
-        }
-    }
-
     #[test]
     fn mapping_preserves_insertion_order() {
         let mut m = Mapping::new();
@@ -415,7 +429,7 @@ mod tests {
 
         let keys: Vec<&str> = m
             .iter()
-            .map(|(k, _)| k.as_str_for_test())
+            .map(|(k, _)| k.as_str().unwrap())
             .collect();
         assert_eq!(keys, ["b", "a", "c"]);
     }
@@ -428,16 +442,6 @@ mod tests {
         assert_eq!(m.len(), 1);
         assert_eq!(m.get(&Value::string("k")), Some(&Value::int(9)));
         assert_eq!(m.get(&Value::string("missing")), None);
-    }
-
-    impl Value {
-        // Test-only helper until accessors land in Task 6.
-        fn as_str_for_test(&self) -> &str {
-            match self.data() {
-                ValueData::String(s) => s,
-                _ => panic!("not a string"),
-            }
-        }
     }
 
     #[test]
@@ -466,7 +470,31 @@ mod tests {
     fn from_conversions() {
         assert_eq!(Value::from(true), Value::bool(true));
         assert_eq!(Value::from(3_i64), Value::int(3));
+        assert_eq!(Value::from(2.5_f64), Value::float(2.5));
         assert_eq!(Value::from("s"), Value::string("s"));
         assert_eq!(Value::from(String::from("s")), Value::string("s"));
+    }
+
+    #[test]
+    fn meta_is_absent_until_requested() {
+        let v = Value::int(1);
+        assert!(v.meta().is_none());
+    }
+
+    #[test]
+    fn meta_mut_lazily_allocates() {
+        let mut v = Value::int(1);
+        v.meta_mut().anchor = Some("a1".to_string());
+        assert_eq!(v.meta().unwrap().anchor.as_deref(), Some("a1"));
+    }
+
+    #[test]
+    fn with_meta_sets_and_take_meta_removes() {
+        let meta = Meta { tag: Some("!!str".to_string()), ..Meta::default() };
+        let mut v = Value::string("x").with_meta(meta);
+        assert!(v.meta().is_some());
+        let taken = v.take_meta().unwrap();
+        assert_eq!(taken.tag.as_deref(), Some("!!str"));
+        assert!(v.meta().is_none());
     }
 }
