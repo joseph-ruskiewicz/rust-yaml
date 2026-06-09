@@ -17,11 +17,66 @@ fn pad(level: usize, options: &EmitOptions) -> String {
 }
 
 /// Emits a value occupying its own line(s) starting at indentation `level`.
-/// Task 1 renders every value as a single flow line; Task 2 adds block forms.
+/// Non-empty collections render in block style; everything else is a single
+/// flow/scalar line.
 fn emit_block_value(value: &Value, level: usize, options: &EmitOptions, out: &mut String) {
-    out.push_str(&pad(level, options));
-    out.push_str(&scalar_or_flow(value));
-    out.push('\n');
+    match value.data() {
+        ValueData::Sequence(items) if !items.is_empty() => {
+            emit_block_sequence(items, level, options, out)
+        }
+        ValueData::Mapping(map) if !map.is_empty() => emit_block_mapping(map, level, options, out),
+        _ => {
+            out.push_str(&pad(level, options));
+            out.push_str(&scalar_or_flow(value));
+            out.push('\n');
+        }
+    }
+}
+
+/// True for a sequence or mapping with at least one element — these render on
+/// their own indented lines rather than inline after a `-` or `key:`.
+fn is_block_collection(value: &Value) -> bool {
+    match value.data() {
+        ValueData::Sequence(items) => !items.is_empty(),
+        ValueData::Mapping(map) => !map.is_empty(),
+        _ => false,
+    }
+}
+
+fn emit_block_sequence(items: &[Value], level: usize, options: &EmitOptions, out: &mut String) {
+    for item in items {
+        out.push_str(&pad(level, options));
+        out.push('-');
+        if is_block_collection(item) {
+            out.push('\n');
+            emit_block_value(item, level + 1, options, out);
+        } else {
+            out.push(' ');
+            out.push_str(&scalar_or_flow(item));
+            out.push('\n');
+        }
+    }
+}
+
+fn emit_block_mapping(
+    map: &crate::value::Mapping,
+    level: usize,
+    options: &EmitOptions,
+    out: &mut String,
+) {
+    for (k, v) in map.iter() {
+        out.push_str(&pad(level, options));
+        out.push_str(&scalar_or_flow(k));
+        out.push(':');
+        if is_block_collection(v) {
+            out.push('\n');
+            emit_block_value(v, level + 1, options, out);
+        } else {
+            out.push(' ');
+            out.push_str(&scalar_or_flow(v));
+            out.push('\n');
+        }
+    }
 }
 
 /// Renders a value to a single-line string: scalars via `emit_scalar`,
@@ -223,5 +278,56 @@ mod tests {
         roundtrip("plain text\n");
         roundtrip("\"quoted: value\"\n");
         roundtrip("\"line\\nbreak\"\n");
+    }
+
+    #[test]
+    fn block_sequence_layout() {
+        let v = crate::api::parse("- a\n- b\n").unwrap();
+        assert_eq!(to_string(&v), "- a\n- b\n");
+    }
+
+    #[test]
+    fn block_mapping_layout() {
+        let v = crate::api::parse("a: 1\nb: 2\n").unwrap();
+        assert_eq!(to_string(&v), "a: 1\nb: 2\n");
+    }
+
+    #[test]
+    fn nested_mapping_layout() {
+        let v = crate::api::parse("outer:\n  inner: 7\n").unwrap();
+        assert_eq!(to_string(&v), "outer:\n  inner: 7\n");
+    }
+
+    #[test]
+    fn mapping_in_sequence_layout() {
+        let v = crate::api::parse("- a: 1\n  b: 2\n").unwrap();
+        // Collection entries are placed on the following line, indented.
+        assert_eq!(to_string(&v), "-\n  a: 1\n  b: 2\n");
+    }
+
+    #[test]
+    fn empty_collections_stay_flow() {
+        assert_eq!(to_string(&Value::sequence(vec![])), "[]\n");
+        assert_eq!(
+            to_string(&Value::mapping(crate::value::Mapping::new())),
+            "{}\n"
+        );
+    }
+
+    #[test]
+    fn complex_key_is_flow_inline() {
+        // A sequence used as a mapping key renders in flow form before the colon.
+        let mut m = crate::value::Mapping::new();
+        m.insert(
+            Value::sequence(vec![Value::int(1), Value::int(2)]),
+            Value::string("v"),
+        );
+        assert_eq!(to_string(&Value::mapping(m)), "[1, 2]: v\n");
+    }
+
+    #[test]
+    fn deep_structure_roundtrips() {
+        roundtrip("a:\n  - 1\n  - 2\nb:\n  c: d\n");
+        roundtrip("- - 1\n  - 2\n- x\n");
     }
 }
