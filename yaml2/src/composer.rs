@@ -6,7 +6,7 @@ use crate::error::{Error, ErrorKind, Result, Span};
 use crate::event::{Event, EventKind};
 use crate::meta::ScalarStyle;
 use crate::options::ParseOptions;
-use crate::value::Value;
+use crate::value::{Mapping, Value};
 
 /// Composes a validated event stream into one `Value` per document.
 pub(crate) fn compose(events: &[Event], options: &ParseOptions) -> Result<Vec<Value>> {
@@ -116,6 +116,7 @@ impl Composer<'_> {
                 Ok(composed)
             }
             EventKind::SequenceStart { anchor, tag } => self.compose_sequence(anchor, tag),
+            EventKind::MappingStart { anchor, tag } => self.compose_mapping(anchor, tag),
             other => Err(Error::new(
                 ErrorKind::Compose,
                 format!("unexpected event while composing a node: {other:?}"),
@@ -141,6 +142,34 @@ impl Composer<'_> {
             }
         }
         let value = Value::sequence(items);
+        if let Some(name) = anchor {
+            self.anchors.insert(name, value.clone());
+        }
+        Ok(value)
+    }
+
+    fn compose_mapping(&mut self, anchor: Option<String>, _tag: Option<String>) -> Result<Value> {
+        let mut map = Mapping::new();
+        loop {
+            match self.peek() {
+                Some(EventKind::MappingEnd) => {
+                    self.bump()?;
+                    break;
+                }
+                Some(_) => {
+                    let k = self.compose_node()?;
+                    let val = self.compose_node()?;
+                    map.insert(k, val);
+                }
+                None => {
+                    return Err(Error::new(
+                        ErrorKind::Compose,
+                        "unterminated mapping in event stream",
+                    ))
+                }
+            }
+        }
+        let value = Value::mapping(map);
         if let Some(name) = anchor {
             self.anchors.insert(name, value.clone());
         }
@@ -243,5 +272,49 @@ mod tests {
     #[test]
     fn empty_flow_sequence_is_empty() {
         assert_eq!(parse("[]\n").as_sequence().unwrap().len(), 0);
+    }
+
+    fn key(s: &str) -> Value {
+        Value::string(s)
+    }
+
+    #[test]
+    fn flow_mapping_of_scalars() {
+        let v = parse("{a: 1, b: 2}\n");
+        let m = v.as_mapping().unwrap();
+        assert_eq!(m.len(), 2);
+        assert_eq!(m.get(&key("a")).unwrap().as_int(), Some(1));
+        assert_eq!(m.get(&key("b")).unwrap().as_int(), Some(2));
+    }
+
+    #[test]
+    fn block_mapping_of_scalars() {
+        let v = parse("a: 1\nb: 2\n");
+        let m = v.as_mapping().unwrap();
+        assert_eq!(m.get(&key("a")).unwrap().as_int(), Some(1));
+        assert_eq!(m.get(&key("b")).unwrap().as_int(), Some(2));
+    }
+
+    #[test]
+    fn nested_mapping() {
+        let v = parse("outer:\n  inner: 7\n");
+        let outer = v.as_mapping().unwrap();
+        let inner = outer.get(&key("outer")).unwrap().as_mapping().unwrap();
+        assert_eq!(inner.get(&key("inner")).unwrap().as_int(), Some(7));
+    }
+
+    #[test]
+    fn mapping_empty_value_is_null() {
+        let v = parse("a:\n");
+        let m = v.as_mapping().unwrap();
+        assert!(m.get(&key("a")).unwrap().is_null());
+    }
+
+    #[test]
+    fn duplicate_keys_last_wins() {
+        let v = parse("{a: 1, a: 2}\n");
+        let m = v.as_mapping().unwrap();
+        assert_eq!(m.len(), 1);
+        assert_eq!(m.get(&key("a")).unwrap().as_int(), Some(2));
     }
 }
