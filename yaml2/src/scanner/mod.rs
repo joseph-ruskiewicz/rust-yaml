@@ -726,8 +726,10 @@ impl<'a> Scanner<'a> {
         let parent = self.indent; // 0-based; -1 at root
 
         let mut content_indent: Option<usize> = explicit_indent.map(|n| {
+            // `content_indent` is the number of leading spaces to strip. The
+            // indentation indicator `n` (1-9) is relative to the parent block.
             let base = if parent < 0 { 0 } else { (parent + 1) as usize };
-            base + n - 1
+            base + n
         });
 
         let mut lines: Vec<(String, bool)> = Vec::new();
@@ -1002,6 +1004,24 @@ mod tests {
         assert_eq!(
             one_scalar("|\n  a\n\n  b\n"),
             ("a\n\nb\n".to_string(), ScalarStyle::Literal)
+        );
+    }
+
+    #[test]
+    fn block_scalar_explicit_indent() {
+        // `|2` at root: content indent is exactly 2 spaces; extra spaces on the
+        // second line are content.
+        assert_eq!(
+            one_scalar("|2\n  a\n    b\n"),
+            ("a\n  b\n".to_string(), ScalarStyle::Literal)
+        );
+    }
+
+    #[test]
+    fn block_scalar_indent_and_chomp_combined() {
+        assert_eq!(
+            one_scalar("|2-\n  a\n  b\n"),
+            ("a\nb".to_string(), ScalarStyle::Literal)
         );
     }
 
