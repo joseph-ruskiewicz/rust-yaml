@@ -50,6 +50,11 @@ pub(crate) struct Scanner<'a> {
     /// True when the next directive or document marker should reset the handle
     /// map (directives apply to one document only).
     next_doc_needs_reset: bool,
+    /// True while the cursor is in the leading whitespace of a line (before any
+    /// token on that line). Used to detect tab indentation.
+    at_line_start: bool,
+    /// True when a tab has appeared in the current line's leading whitespace.
+    tab_in_indent: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -86,6 +91,8 @@ impl<'a> Scanner<'a> {
             simple_key: None,
             tag_handles: Self::default_tag_handles(),
             next_doc_needs_reset: true,
+            at_line_start: true,
+            tab_in_indent: false,
         }
     }
 
@@ -146,6 +153,15 @@ impl<'a> Scanner<'a> {
             return Ok(());
         }
 
+        // Tabs may not be used for indentation in block context.
+        if self.flow_depth == 0 && self.tab_in_indent && self.reader.peek().is_some() {
+            let pos = self.reader.position();
+            return Err(
+                Error::new(ErrorKind::Scan, "tabs cannot be used for indentation")
+                    .with_span(Span::new(pos, pos)),
+            );
+        }
+
         // Block context: process indentation at the start of a line.
         if self.flow_depth == 0 {
             self.unroll_indent(Self::col0(self.reader.position()));
@@ -185,7 +201,13 @@ impl<'a> Scanner<'a> {
     fn skip_to_next_token(&mut self) {
         loop {
             match self.reader.peek() {
-                Some(' ') | Some('\t') => {
+                Some(' ') => {
+                    self.reader.advance();
+                }
+                Some('\t') => {
+                    if self.flow_depth == 0 && self.at_line_start {
+                        self.tab_in_indent = true;
+                    }
                     self.reader.advance();
                 }
                 Some('\n') | Some('\r') => {
@@ -193,6 +215,8 @@ impl<'a> Scanner<'a> {
                     if self.flow_depth == 0 {
                         self.simple_key_allowed = true;
                     }
+                    self.at_line_start = true;
+                    self.tab_in_indent = false;
                 }
                 Some('#') => {
                     while let Some(c) = self.reader.peek() {
@@ -202,7 +226,10 @@ impl<'a> Scanner<'a> {
                         self.reader.advance();
                     }
                 }
-                _ => break,
+                _ => {
+                    self.at_line_start = false;
+                    break;
+                }
             }
         }
     }
@@ -2900,5 +2927,68 @@ mod tests {
         )
         .unwrap_err();
         assert_eq!(err.kind(), crate::error::ErrorKind::Scan);
+    }
+
+    #[test]
+    fn leading_tab_indentation_is_rejected() {
+        let err = tokenize("\tkey: value", Limits::default()).unwrap_err();
+        assert_eq!(err.kind(), crate::error::ErrorKind::Scan);
+    }
+
+    #[test]
+    fn mixed_space_then_tab_indentation_is_rejected() {
+        let err = tokenize("  \tkey: value", Limits::default()).unwrap_err();
+        assert_eq!(err.kind(), crate::error::ErrorKind::Scan);
+    }
+
+    #[test]
+    fn nested_tab_indentation_is_rejected() {
+        let err = tokenize("key:\n\tnested: v\n", Limits::default()).unwrap_err();
+        assert_eq!(err.kind(), crate::error::ErrorKind::Scan);
+    }
+
+    #[test]
+    fn tab_as_separation_is_allowed() {
+        // A tab after the `:` token is separation, not indentation.
+        assert_eq!(
+            kinds("key:\tvalue\n"),
+            vec![
+                TokenKind::StreamStart,
+                TokenKind::BlockMappingStart,
+                TokenKind::Key,
+                TokenKind::Scalar {
+                    value: "key".to_string(),
+                    style: ScalarStyle::Plain
+                },
+                TokenKind::Value,
+                TokenKind::Scalar {
+                    value: "value".to_string(),
+                    style: ScalarStyle::Plain
+                },
+                TokenKind::BlockEnd,
+                TokenKind::StreamEnd,
+            ]
+        );
+    }
+
+    #[test]
+    fn tab_in_flow_context_is_allowed() {
+        assert!(tokenize("[\n\ta, b]", Limits::default()).is_ok());
+    }
+
+    #[test]
+    fn tab_on_blank_line_is_allowed() {
+        assert!(tokenize("a: 1\n\t\nb: 2\n", Limits::default()).is_ok());
+    }
+
+    #[test]
+    fn tab_before_comment_is_allowed() {
+        assert!(tokenize("a: 1\n\t# c\nb: 2\n", Limits::default()).is_ok());
+    }
+
+    #[test]
+    fn trailing_tab_only_line_is_allowed() {
+        // A tab with no following content (EOF) is not an indentation error.
+        assert!(tokenize("a: 1\n\t", Limits::default()).is_ok());
     }
 }
