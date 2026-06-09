@@ -338,42 +338,69 @@ impl<'a> Scanner<'a> {
         ))
     }
 
-    /// Scans a single-line plain scalar in flow context.
+    /// Scans a plain scalar, folding multi-line continuations per YAML 1.2.
+    /// A single line break folds to a space; blank lines fold to newlines; each
+    /// line's leading/trailing whitespace is stripped. A continuation line must
+    /// be more indented than the current block indent (block context) or simply
+    /// present (flow context), and must not begin a document marker, comment, or
+    /// a new construct.
     fn scan_plain(&mut self, start: Position) -> Result<Token> {
         let mut value = String::new();
-        // Position immediately after the last non-whitespace character consumed,
-        // so the span does not include trailing whitespace that gets trimmed.
+        // Position just after the last committed content char (span end).
         let mut content_end = start;
-        loop {
-            match self.reader.peek() {
-                None | Some('\n') | Some('\r') => break,
-                Some(',') | Some('[') | Some(']') | Some('{') | Some('}') => break,
-                Some(':') if self.indicator_terminator_next() => break,
-                Some(' ') | Some('\t') => {
-                    // A space before '#' ends the scalar (comment); otherwise the
-                    // space may be internal — keep it and let trailing trim handle
-                    // the end-of-scalar case.
-                    if self.reader.peek_nth(1) == Some('#') {
-                        break;
+        // Intra-line whitespace pending before the next content char.
+        let mut whitespaces = String::new();
+        // Pending fold for a line break between content runs.
+        let mut leading_break = false;
+        let mut trailing_breaks = 0usize;
+
+        'scan: loop {
+            // Consume content on the current line.
+            loop {
+                match self.reader.peek() {
+                    None | Some('\n') | Some('\r') => break,
+                    Some(',') | Some('[') | Some(']') | Some('{') | Some('}') => break 'scan,
+                    Some(':') if self.indicator_terminator_next() => break 'scan,
+                    Some(' ') | Some('\t') => {
+                        // A space immediately before '#' starts a comment.
+                        if self.reader.peek() == Some(' ') && self.reader.peek_nth(1) == Some('#') {
+                            break 'scan;
+                        }
+                        whitespaces.push(self.reader.advance().unwrap());
                     }
-                    let c = self.reader.advance().unwrap();
-                    value.push(c);
-                }
-                Some(c) => {
-                    self.reader.advance();
-                    value.push(c);
-                    content_end = self.reader.position();
+                    Some(c) => {
+                        if leading_break {
+                            if trailing_breaks == 0 {
+                                value.push(' ');
+                            } else {
+                                for _ in 0..trailing_breaks {
+                                    value.push('\n');
+                                }
+                            }
+                            leading_break = false;
+                            trailing_breaks = 0;
+                        } else {
+                            value.push_str(&whitespaces);
+                        }
+                        whitespaces.clear();
+                        self.reader.advance();
+                        value.push(c);
+                        content_end = self.reader.position();
+                    }
                 }
             }
+            // Only a line break can start a continuation.
+            if !matches!(self.reader.peek(), Some('\n') | Some('\r')) {
+                break;
+            }
+            if !self.plain_continues(&mut leading_break, &mut trailing_breaks) {
+                break;
+            }
+            // Trailing whitespace of the prior line is dropped on a fold.
+            whitespaces.clear();
         }
-        // `scan_plain` is only entered on a non-break character (break chars are
-        // handled by earlier `scan_content` arms or the loop above), so at least
-        // one character is always consumed.
+
         debug_assert!(!value.is_empty(), "scan_plain produced an empty scalar");
-        // Internal whitespace is accumulated during the loop; only trailing
-        // spaces/tabs are stripped here.
-        let trimmed_len = value.trim_end_matches([' ', '\t']).len();
-        value.truncate(trimmed_len);
         Ok(Token::new(
             TokenKind::Scalar {
                 value,
@@ -381,6 +408,50 @@ impl<'a> Scanner<'a> {
             },
             Span::new(start, content_end),
         ))
+    }
+
+    /// At a line break inside a plain scalar, decides whether the scalar
+    /// continues. If so, consumes the break(s) and the continuation line's
+    /// leading whitespace, sets the fold state, and returns true. Otherwise
+    /// restores the reader to the break and returns false.
+    fn plain_continues(&mut self, leading_break: &mut bool, trailing_breaks: &mut usize) -> bool {
+        let mark = self.reader.mark();
+        self.consume_line_break();
+        let mut extra = 0usize;
+        // Consume blank lines (whitespace-only), counting them as fold breaks.
+        loop {
+            while matches!(self.reader.peek(), Some(' ') | Some('\t')) {
+                self.reader.advance();
+            }
+            match self.reader.peek() {
+                Some('\n') | Some('\r') => {
+                    self.consume_line_break();
+                    extra += 1;
+                }
+                _ => break,
+            }
+        }
+        let col = self.reader.position().column as i64 - 1;
+        let continues = match self.reader.peek() {
+            None => false,
+            Some('#') => false,
+            _ if self.marker_ahead("---") || self.marker_ahead("...") => false,
+            Some(',') | Some('[') | Some(']') | Some('{') | Some('}') if self.flow_depth > 0 => {
+                false
+            }
+            Some(':') if self.indicator_terminator_next() => false,
+            Some('-') if self.flow_depth == 0 && self.block_entry_next() => false,
+            Some('?') if self.indicator_terminator_next() => false,
+            _ => self.flow_depth > 0 || col > self.indent,
+        };
+        if continues {
+            *leading_break = true;
+            *trailing_breaks = extra;
+            true
+        } else {
+            self.reader.reset(mark);
+            false
+        }
     }
 
     /// Scans `&name` (anchor) or `*name` (alias). `is_anchor` selects which.
@@ -1824,16 +1895,15 @@ mod tests {
 
     #[test]
     fn bare_scalar_is_not_a_key() {
+        // With multi-line plain folding, `hello\nworld` at root (indent -1) folds
+        // into a single scalar. The key assertion still holds: no Key token is
+        // produced — the two words are content of one scalar, not a key-value pair.
         assert_eq!(
             kinds("hello\nworld\n"),
             vec![
                 TokenKind::StreamStart,
                 TokenKind::Scalar {
-                    value: "hello".to_string(),
-                    style: ScalarStyle::Plain
-                },
-                TokenKind::Scalar {
-                    value: "world".to_string(),
+                    value: "hello world".to_string(),
                     style: ScalarStyle::Plain
                 },
                 TokenKind::StreamEnd,
@@ -2433,5 +2503,148 @@ mod tests {
         assert_eq!(style, ScalarStyle::Literal);
         // Auto-detected content indent is 100_000, so "x" is the content.
         assert_eq!(value, "x\n");
+    }
+
+    #[test]
+    fn plain_folds_single_break_to_space() {
+        assert_eq!(
+            scalars("one\ntwo\n"),
+            vec![("one two".to_string(), ScalarStyle::Plain)]
+        );
+    }
+
+    #[test]
+    fn plain_folds_blank_line_to_newline() {
+        assert_eq!(
+            scalars("a\n\nb\n"),
+            vec![("a\nb".to_string(), ScalarStyle::Plain)]
+        );
+    }
+
+    #[test]
+    fn plain_continuation_in_mapping_value() {
+        assert_eq!(
+            kinds("key: one\n  two\n"),
+            vec![
+                TokenKind::StreamStart,
+                TokenKind::BlockMappingStart,
+                TokenKind::Key,
+                TokenKind::Scalar {
+                    value: "key".to_string(),
+                    style: ScalarStyle::Plain
+                },
+                TokenKind::Value,
+                TokenKind::Scalar {
+                    value: "one two".to_string(),
+                    style: ScalarStyle::Plain
+                },
+                TokenKind::BlockEnd,
+                TokenKind::StreamEnd,
+            ]
+        );
+    }
+
+    #[test]
+    fn plain_continuation_stops_at_dedent() {
+        // `next` at column 0 is not more indented than the mapping (indent 0),
+        // so the value scalar ends and `next: x` is a sibling entry.
+        assert_eq!(
+            kinds("key: one\n  two\nnext: x\n"),
+            vec![
+                TokenKind::StreamStart,
+                TokenKind::BlockMappingStart,
+                TokenKind::Key,
+                TokenKind::Scalar {
+                    value: "key".to_string(),
+                    style: ScalarStyle::Plain
+                },
+                TokenKind::Value,
+                TokenKind::Scalar {
+                    value: "one two".to_string(),
+                    style: ScalarStyle::Plain
+                },
+                TokenKind::Key,
+                TokenKind::Scalar {
+                    value: "next".to_string(),
+                    style: ScalarStyle::Plain
+                },
+                TokenKind::Value,
+                TokenKind::Scalar {
+                    value: "x".to_string(),
+                    style: ScalarStyle::Plain
+                },
+                TokenKind::BlockEnd,
+                TokenKind::StreamEnd,
+            ]
+        );
+    }
+
+    #[test]
+    fn plain_continuation_stops_at_document_marker() {
+        assert_eq!(
+            scalars("one\n...\n"),
+            vec![("one".to_string(), ScalarStyle::Plain)]
+        );
+    }
+
+    #[test]
+    fn plain_continuation_stops_at_comment_line() {
+        // The comment line ends the first scalar; `b` is a separate scalar.
+        assert_eq!(
+            scalars("a\n# c\nb\n"),
+            vec![
+                ("a".to_string(), ScalarStyle::Plain),
+                ("b".to_string(), ScalarStyle::Plain),
+            ]
+        );
+    }
+
+    #[test]
+    fn plain_folds_in_flow_sequence() {
+        assert_eq!(
+            kinds("[one\n two]"),
+            vec![
+                TokenKind::StreamStart,
+                TokenKind::FlowSequenceStart,
+                TokenKind::Scalar {
+                    value: "one two".to_string(),
+                    style: ScalarStyle::Plain
+                },
+                TokenKind::FlowSequenceEnd,
+                TokenKind::StreamEnd,
+            ]
+        );
+    }
+
+    #[test]
+    fn plain_single_line_unchanged() {
+        // Regression: single-line plain scalars keep their internal spaces.
+        assert_eq!(
+            scalars("a b c\n"),
+            vec![("a b c".to_string(), ScalarStyle::Plain)]
+        );
+    }
+
+    #[test]
+    fn plain_root_sequence_after_scalar_is_not_folded() {
+        // `- b` begins a block entry, so it does not continue the scalar `a`.
+        assert_eq!(
+            kinds("a\n- b\n"),
+            vec![
+                TokenKind::StreamStart,
+                TokenKind::Scalar {
+                    value: "a".to_string(),
+                    style: ScalarStyle::Plain
+                },
+                TokenKind::BlockSequenceStart,
+                TokenKind::BlockEntry,
+                TokenKind::Scalar {
+                    value: "b".to_string(),
+                    style: ScalarStyle::Plain
+                },
+                TokenKind::BlockEnd,
+                TokenKind::StreamEnd,
+            ]
+        );
     }
 }

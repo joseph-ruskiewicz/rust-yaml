@@ -10,7 +10,6 @@ pub(crate) struct Reader<'a> {
 }
 
 /// An opaque snapshot of a `Reader`'s position, for cheap backtracking.
-#[allow(dead_code)] // used by scan_plain (next task)
 #[derive(Clone, Copy, Debug)]
 pub(crate) struct Mark {
     offset: usize,
@@ -67,7 +66,6 @@ impl<'a> Reader<'a> {
     }
 
     /// Snapshots the current position for later `reset`.
-    #[allow(dead_code)] // used by scan_plain (next task)
     pub(crate) fn mark(&self) -> Mark {
         Mark {
             offset: self.offset,
@@ -77,7 +75,6 @@ impl<'a> Reader<'a> {
     }
 
     /// Restores a position captured by `mark`.
-    #[allow(dead_code)] // used by scan_plain (next task)
     pub(crate) fn reset(&mut self, mark: Mark) {
         self.offset = mark.offset;
         self.line = mark.line;
