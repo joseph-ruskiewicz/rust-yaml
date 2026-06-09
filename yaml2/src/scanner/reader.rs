@@ -9,6 +9,15 @@ pub(crate) struct Reader<'a> {
     column: usize,
 }
 
+/// An opaque snapshot of a `Reader`'s position, for cheap backtracking.
+#[allow(dead_code)] // used by scan_plain (next task)
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct Mark {
+    offset: usize,
+    line: usize,
+    column: usize,
+}
+
 impl<'a> Reader<'a> {
     pub(crate) fn new(input: &'a str) -> Self {
         Self {
@@ -55,6 +64,24 @@ impl<'a> Reader<'a> {
     /// Whether the remaining input begins with `prefix`.
     pub(crate) fn starts_with(&self, prefix: &str) -> bool {
         self.input[self.offset..].starts_with(prefix)
+    }
+
+    /// Snapshots the current position for later `reset`.
+    #[allow(dead_code)] // used by scan_plain (next task)
+    pub(crate) fn mark(&self) -> Mark {
+        Mark {
+            offset: self.offset,
+            line: self.line,
+            column: self.column,
+        }
+    }
+
+    /// Restores a position captured by `mark`.
+    #[allow(dead_code)] // used by scan_plain (next task)
+    pub(crate) fn reset(&mut self, mark: Mark) {
+        self.offset = mark.offset;
+        self.line = mark.line;
+        self.column = mark.column;
     }
 
     /// Consume and return the next character, updating offset/line/column.
@@ -191,5 +218,21 @@ mod tests {
         assert_eq!(r2.count_leading_spaces(), 0);
         let r3 = Reader::new("");
         assert_eq!(r3.count_leading_spaces(), 0);
+    }
+
+    #[test]
+    fn mark_and_reset_restore_position() {
+        let mut r = Reader::new("ab\ncd");
+        assert_eq!(r.advance(), Some('a'));
+        let m = r.mark();
+        assert_eq!(r.advance(), Some('b'));
+        r.advance(); // '\n' -> line 2
+        assert_eq!(r.advance(), Some('c'));
+        // Restore to right after 'a'.
+        r.reset(m);
+        assert_eq!(r.position().offset, 1);
+        assert_eq!(r.position().line, 1);
+        assert_eq!(r.position().column, 2);
+        assert_eq!(r.advance(), Some('b'));
     }
 }
