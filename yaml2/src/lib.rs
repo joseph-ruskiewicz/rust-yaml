@@ -1,5 +1,7 @@
 //! A modern, YAML 1.2-compliant parser and emitter for Rust.
 
+mod api;
+mod composer;
 mod error;
 mod event;
 mod meta;
@@ -9,6 +11,7 @@ mod scalar;
 mod scanner;
 mod value;
 
+pub use api::{parse, parse_documents, parse_documents_with, parse_with};
 pub use error::{Error, ErrorKind, Position, Result, Span};
 pub use event::{Event, EventKind};
 pub use meta::{Comments, Meta, ScalarStyle};
