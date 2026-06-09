@@ -25,6 +25,12 @@ pub struct Value {
 }
 
 /// An insertion-ordered YAML mapping. Key order is always preserved.
+///
+/// Equality, ordering, and hashing are **insertion-order-sensitive** by design:
+/// two mappings with the same entries in a different key order are considered
+/// distinct. This is deliberate — this crate preserves key order as meaningful
+/// data (for round-tripping), so a reordering is a different document. (`eq` and
+/// `hash` remain mutually consistent.) Insert/lookup methods are added in a later task.
 #[derive(Debug, Clone, Default)]
 pub struct Mapping {
     entries: IndexMap<Value, Value>,
@@ -67,12 +73,10 @@ impl Value {
         &self.data
     }
 
-    #[allow(dead_code)] // used in later tasks
     pub fn data_mut(&mut self) -> &mut ValueData {
         &mut self.data
     }
 
-    #[allow(dead_code)] // used in later tasks
     pub fn into_data(self) -> ValueData {
         self.data
     }
@@ -244,6 +248,38 @@ mod tests {
     fn float_zero_signs_are_distinct_keys() {
         // Consistent Eq/Hash: +0.0 and -0.0 differ by bits and must not collide.
         assert_ne!(Value::float(0.0), Value::float(-0.0));
+    }
+
+    #[test]
+    fn cross_variant_ordering_follows_rank() {
+        // Null < Bool < Int < Float < String < Sequence < Mapping
+        assert!(Value::null() < Value::bool(false));
+        assert!(Value::bool(true) < Value::int(0));
+        assert!(Value::int(99) < Value::float(0.0));
+        assert!(Value::float(1.0) < Value::string("a"));
+        assert!(Value::string("z") < Value::sequence(vec![]));
+    }
+
+    #[test]
+    fn sequence_ordering_is_lexicographic() {
+        let a = Value::sequence(vec![Value::int(1), Value::int(2)]);
+        let b = Value::sequence(vec![Value::int(1), Value::int(3)]);
+        assert!(a < b);
+    }
+
+    #[test]
+    fn mapping_equality_is_order_sensitive() {
+        use indexmap::IndexMap;
+        let mut e1 = IndexMap::new();
+        e1.insert(Value::string("a"), Value::int(1));
+        e1.insert(Value::string("b"), Value::int(2));
+        let mut e2 = IndexMap::new();
+        e2.insert(Value::string("b"), Value::int(2));
+        e2.insert(Value::string("a"), Value::int(1));
+        let m1 = Mapping { entries: e1 };
+        let m2 = Mapping { entries: e2 };
+        // Same entries, different order -> not equal (deliberate).
+        assert_ne!(Value::mapping(m1), Value::mapping(m2));
     }
 
     impl Value {
