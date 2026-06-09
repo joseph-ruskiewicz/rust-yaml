@@ -806,4 +806,19 @@ job:
         let yes_11 = crate::api::parse_with("yes\n", &opts).unwrap();
         assert_eq!(yes_11.as_bool(), Some(true));
     }
+
+    #[test]
+    fn tab_indented_document_is_an_error() {
+        let err = crate::api::parse("root:\n\tchild: v\n").unwrap_err();
+        assert_eq!(err.kind(), crate::error::ErrorKind::Scan);
+    }
+
+    #[test]
+    fn space_indented_document_still_parses() {
+        // Regression: ordinary space indentation is unaffected.
+        let v = crate::api::parse("root:\n  child: v\n").unwrap();
+        let m = v.as_mapping().unwrap();
+        let child = m.get(&key("root")).unwrap().as_mapping().unwrap();
+        assert_eq!(child.get(&key("child")).unwrap().as_str(), Some("v"));
+    }
 }
