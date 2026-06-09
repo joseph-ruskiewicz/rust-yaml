@@ -49,7 +49,10 @@ pub(crate) enum TokenKind {
     /// `!tag` (raw text including the leading `!`; full resolution is later)
     Tag(String),
     /// A scalar value with the style it was written in.
-    Scalar { value: String, style: ScalarStyle },
+    Scalar {
+        value: String,
+        style: ScalarStyle,
+    },
 }
 
 #[cfg(test)]
@@ -67,10 +70,16 @@ mod tests {
 
     #[test]
     fn scalar_kind_carries_value_and_style() {
-        let kind = TokenKind::Scalar { value: "hi".to_string(), style: ScalarStyle::Plain };
+        let kind = TokenKind::Scalar {
+            value: "hi".to_string(),
+            style: ScalarStyle::Plain,
+        };
         assert_eq!(
             kind,
-            TokenKind::Scalar { value: "hi".to_string(), style: ScalarStyle::Plain }
+            TokenKind::Scalar {
+                value: "hi".to_string(),
+                style: ScalarStyle::Plain
+            }
         );
     }
 }

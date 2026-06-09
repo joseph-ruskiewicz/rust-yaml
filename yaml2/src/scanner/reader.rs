@@ -11,7 +11,12 @@ pub(crate) struct Reader<'a> {
 
 impl<'a> Reader<'a> {
     pub(crate) fn new(input: &'a str) -> Self {
-        Self { input, offset: 0, line: 1, column: 1 }
+        Self {
+            input,
+            offset: 0,
+            line: 1,
+            column: 1,
+        }
     }
 
     /// Current source position.

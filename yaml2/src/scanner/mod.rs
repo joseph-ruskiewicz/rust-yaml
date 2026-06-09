@@ -2,7 +2,7 @@
 //!
 //! This layer is consumed by the parser (Plan 4); until then its public(crate)
 //! surface is exercised only by tests, so dead-code is allowed module-wide.
-#![allow(dead_code, unused_imports)]
+#![allow(dead_code)]
 
 mod reader;
 mod token;
@@ -56,7 +56,10 @@ impl<'a> Scanner<'a> {
                 .with_span(Span::new(pos, pos)));
             }
             let pos = self.reader.position();
-            return Ok(Some(Token::new(TokenKind::StreamStart, Span::new(pos, pos))));
+            return Ok(Some(Token::new(
+                TokenKind::StreamStart,
+                Span::new(pos, pos),
+            )));
         }
 
         if self.finished {
@@ -68,7 +71,10 @@ impl<'a> Scanner<'a> {
         match self.reader.peek() {
             None => {
                 self.finished = true;
-                Ok(Some(Token::new(TokenKind::StreamEnd, Span::new(start, start))))
+                Ok(Some(Token::new(
+                    TokenKind::StreamEnd,
+                    Span::new(start, start),
+                )))
             }
             Some(c) => self.scan_content(c, start).map(Some),
         }
@@ -101,9 +107,7 @@ impl<'a> Scanner<'a> {
             '-' if self.marker_ahead("---") => {
                 Ok(self.scan_marker(TokenKind::DocumentStart, start))
             }
-            '.' if self.marker_ahead("...") => {
-                Ok(self.scan_marker(TokenKind::DocumentEnd, start))
-            }
+            '.' if self.marker_ahead("...") => Ok(self.scan_marker(TokenKind::DocumentEnd, start)),
             '[' => Ok(self.single_char(TokenKind::FlowSequenceStart, start)),
             ']' => Ok(self.single_char(TokenKind::FlowSequenceEnd, start)),
             '{' => Ok(self.single_char(TokenKind::FlowMappingStart, start)),
@@ -112,9 +116,7 @@ impl<'a> Scanner<'a> {
             ':' if self.indicator_terminator_next() => {
                 Ok(self.single_char(TokenKind::Value, start))
             }
-            '?' if self.indicator_terminator_next() => {
-                Ok(self.single_char(TokenKind::Key, start))
-            }
+            '?' if self.indicator_terminator_next() => Ok(self.single_char(TokenKind::Key, start)),
             '\'' => self.scan_single_quoted(start),
             '"' => self.scan_double_quoted(start),
             '&' => self.scan_anchor_or_alias(start, true),
@@ -157,7 +159,10 @@ impl<'a> Scanner<'a> {
         let trimmed_len = value.trim_end_matches([' ', '\t']).len();
         value.truncate(trimmed_len);
         Ok(Token::new(
-            TokenKind::Scalar { value, style: ScalarStyle::Plain },
+            TokenKind::Scalar {
+                value,
+                style: ScalarStyle::Plain,
+            },
             Span::new(start, self.reader.position()),
         ))
     }
@@ -189,7 +194,10 @@ impl<'a> Scanner<'a> {
             text.push('!');
         }
         text.push_str(&self.take_name());
-        Token::new(TokenKind::Tag(text), Span::new(start, self.reader.position()))
+        Token::new(
+            TokenKind::Tag(text),
+            Span::new(start, self.reader.position()),
+        )
     }
 
     /// Consumes a run of name characters (non-whitespace, non-flow-indicator).
@@ -211,11 +219,10 @@ impl<'a> Scanner<'a> {
         loop {
             match self.reader.peek() {
                 None => {
-                    return Err(Error::new(
-                        ErrorKind::Scan,
-                        "unterminated single-quoted scalar",
-                    )
-                    .with_span(Span::new(start, self.reader.position())));
+                    return Err(
+                        Error::new(ErrorKind::Scan, "unterminated single-quoted scalar")
+                            .with_span(Span::new(start, self.reader.position())),
+                    );
                 }
                 Some('\'') => {
                     self.reader.advance(); // consume the quote
@@ -226,7 +233,10 @@ impl<'a> Scanner<'a> {
                     } else {
                         // Closing quote.
                         return Ok(Token::new(
-                            TokenKind::Scalar { value, style: ScalarStyle::SingleQuoted },
+                            TokenKind::Scalar {
+                                value,
+                                style: ScalarStyle::SingleQuoted,
+                            },
                             Span::new(start, self.reader.position()),
                         ));
                     }
@@ -245,16 +255,18 @@ impl<'a> Scanner<'a> {
         loop {
             match self.reader.peek() {
                 None => {
-                    return Err(Error::new(
-                        ErrorKind::Scan,
-                        "unterminated double-quoted scalar",
-                    )
-                    .with_span(Span::new(start, self.reader.position())));
+                    return Err(
+                        Error::new(ErrorKind::Scan, "unterminated double-quoted scalar")
+                            .with_span(Span::new(start, self.reader.position())),
+                    );
                 }
                 Some('"') => {
                     self.reader.advance();
                     return Ok(Token::new(
-                        TokenKind::Scalar { value, style: ScalarStyle::DoubleQuoted },
+                        TokenKind::Scalar {
+                            value,
+                            style: ScalarStyle::DoubleQuoted,
+                        },
                         Span::new(start, self.reader.position()),
                     ));
                 }
@@ -314,10 +326,14 @@ impl<'a> Scanner<'a> {
     fn scan_hex_escape(&mut self, n: usize, start: Position) -> Result<char> {
         let mut code: u32 = 0;
         for _ in 0..n {
-            let d = self.reader.advance().and_then(|c| c.to_digit(16)).ok_or_else(|| {
-                Error::new(ErrorKind::Scan, "invalid hex escape")
-                    .with_span(Span::new(start, self.reader.position()))
-            })?;
+            let d = self
+                .reader
+                .advance()
+                .and_then(|c| c.to_digit(16))
+                .ok_or_else(|| {
+                    Error::new(ErrorKind::Scan, "invalid hex escape")
+                        .with_span(Span::new(start, self.reader.position()))
+                })?;
             code = code * 16 + d;
         }
         char::from_u32(code).ok_or_else(|| {
@@ -389,7 +405,10 @@ mod tests {
 
     #[test]
     fn empty_input_is_stream_start_then_end() {
-        assert_eq!(kinds(""), vec![TokenKind::StreamStart, TokenKind::StreamEnd]);
+        assert_eq!(
+            kinds(""),
+            vec![TokenKind::StreamStart, TokenKind::StreamEnd]
+        );
     }
 
     #[test]
@@ -402,7 +421,10 @@ mod tests {
 
     #[test]
     fn input_over_size_limit_errors() {
-        let limits = Limits { max_input_bytes: 4, ..Limits::default() };
+        let limits = Limits {
+            max_input_bytes: 4,
+            ..Limits::default()
+        };
         let err = tokenize("abcdef", limits).unwrap_err();
         assert_eq!(err.kind(), crate::error::ErrorKind::LimitExceeded);
     }
@@ -604,9 +626,15 @@ mod tests {
             kinds("key: value"),
             vec![
                 TokenKind::StreamStart,
-                TokenKind::Scalar { value: "key".to_string(), style: ScalarStyle::Plain },
+                TokenKind::Scalar {
+                    value: "key".to_string(),
+                    style: ScalarStyle::Plain
+                },
                 TokenKind::Value,
-                TokenKind::Scalar { value: "value".to_string(), style: ScalarStyle::Plain },
+                TokenKind::Scalar {
+                    value: "value".to_string(),
+                    style: ScalarStyle::Plain
+                },
                 TokenKind::StreamEnd,
             ]
         );
@@ -619,9 +647,15 @@ mod tests {
             vec![
                 TokenKind::StreamStart,
                 TokenKind::FlowSequenceStart,
-                TokenKind::Scalar { value: "a".to_string(), style: ScalarStyle::Plain },
+                TokenKind::Scalar {
+                    value: "a".to_string(),
+                    style: ScalarStyle::Plain
+                },
                 TokenKind::FlowEntry,
-                TokenKind::Scalar { value: "b".to_string(), style: ScalarStyle::Plain },
+                TokenKind::Scalar {
+                    value: "b".to_string(),
+                    style: ScalarStyle::Plain
+                },
                 TokenKind::FlowSequenceEnd,
                 TokenKind::StreamEnd,
             ]
@@ -652,7 +686,10 @@ mod tests {
             kinds("abc:"),
             vec![
                 TokenKind::StreamStart,
-                TokenKind::Scalar { value: "abc".to_string(), style: ScalarStyle::Plain },
+                TokenKind::Scalar {
+                    value: "abc".to_string(),
+                    style: ScalarStyle::Plain
+                },
                 TokenKind::Value,
                 TokenKind::StreamEnd,
             ]
@@ -681,7 +718,10 @@ mod tests {
                 TokenKind::StreamStart,
                 TokenKind::FlowSequenceStart,
                 TokenKind::Anchor("x".to_string()),
-                TokenKind::Scalar { value: "1".to_string(), style: ScalarStyle::Plain },
+                TokenKind::Scalar {
+                    value: "1".to_string(),
+                    style: ScalarStyle::Plain
+                },
                 TokenKind::FlowEntry,
                 TokenKind::Alias("x".to_string()),
                 TokenKind::FlowSequenceEnd,
@@ -706,5 +746,97 @@ mod tests {
     fn empty_anchor_name_errors() {
         let err = tokenize("& ", Limits::default()).unwrap_err();
         assert_eq!(err.kind(), crate::error::ErrorKind::Scan);
+    }
+
+    #[test]
+    fn full_flow_document_tokenizes() {
+        let input = r#"{ name: "Ada", scores: [90, 88, *prev], tag: !lang ~ }"#;
+        assert_eq!(
+            kinds(input),
+            vec![
+                TokenKind::StreamStart,
+                TokenKind::FlowMappingStart,
+                TokenKind::Scalar {
+                    value: "name".to_string(),
+                    style: ScalarStyle::Plain
+                },
+                TokenKind::Value,
+                TokenKind::Scalar {
+                    value: "Ada".to_string(),
+                    style: ScalarStyle::DoubleQuoted
+                },
+                TokenKind::FlowEntry,
+                TokenKind::Scalar {
+                    value: "scores".to_string(),
+                    style: ScalarStyle::Plain
+                },
+                TokenKind::Value,
+                TokenKind::FlowSequenceStart,
+                TokenKind::Scalar {
+                    value: "90".to_string(),
+                    style: ScalarStyle::Plain
+                },
+                TokenKind::FlowEntry,
+                TokenKind::Scalar {
+                    value: "88".to_string(),
+                    style: ScalarStyle::Plain
+                },
+                TokenKind::FlowEntry,
+                TokenKind::Alias("prev".to_string()),
+                TokenKind::FlowSequenceEnd,
+                TokenKind::FlowEntry,
+                TokenKind::Scalar {
+                    value: "tag".to_string(),
+                    style: ScalarStyle::Plain
+                },
+                TokenKind::Value,
+                TokenKind::Tag("!lang".to_string()),
+                TokenKind::Scalar {
+                    value: "~".to_string(),
+                    style: ScalarStyle::Plain
+                },
+                TokenKind::FlowMappingEnd,
+                TokenKind::StreamEnd,
+            ]
+        );
+    }
+
+    #[test]
+    fn multiple_documents() {
+        assert_eq!(
+            kinds("--- [1]\n--- [2]\n"),
+            vec![
+                TokenKind::StreamStart,
+                TokenKind::DocumentStart,
+                TokenKind::FlowSequenceStart,
+                TokenKind::Scalar {
+                    value: "1".to_string(),
+                    style: ScalarStyle::Plain
+                },
+                TokenKind::FlowSequenceEnd,
+                TokenKind::DocumentStart,
+                TokenKind::FlowSequenceStart,
+                TokenKind::Scalar {
+                    value: "2".to_string(),
+                    style: ScalarStyle::Plain
+                },
+                TokenKind::FlowSequenceEnd,
+                TokenKind::StreamEnd,
+            ]
+        );
+    }
+
+    #[test]
+    fn spans_are_accurate_for_a_small_input() {
+        let toks = tokenize("a, b", Limits::default()).unwrap();
+        let scalar_a = &toks[1];
+        assert!(matches!(&scalar_a.kind, TokenKind::Scalar { value, .. } if value == "a"));
+        assert_eq!(scalar_a.span.start, crate::error::Position::new(0, 1, 1));
+        assert_eq!(scalar_a.span.end, crate::error::Position::new(1, 1, 2));
+
+        let comma = &toks[2];
+        assert_eq!(comma.kind, TokenKind::FlowEntry);
+        assert_eq!(comma.span.start, crate::error::Position::new(1, 1, 2));
+        assert_eq!(comma.span.end, crate::error::Position::new(2, 1, 3));
     }
 }
