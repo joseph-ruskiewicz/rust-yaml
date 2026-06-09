@@ -115,11 +115,36 @@ impl Composer<'_> {
                 }
                 Ok(composed)
             }
+            EventKind::SequenceStart { anchor, tag } => self.compose_sequence(anchor, tag),
             other => Err(Error::new(
                 ErrorKind::Compose,
                 format!("unexpected event while composing a node: {other:?}"),
             )),
         }
+    }
+
+    fn compose_sequence(&mut self, anchor: Option<String>, _tag: Option<String>) -> Result<Value> {
+        let mut items = Vec::new();
+        loop {
+            match self.peek() {
+                Some(EventKind::SequenceEnd) => {
+                    self.bump()?;
+                    break;
+                }
+                Some(_) => items.push(self.compose_node()?),
+                None => {
+                    return Err(Error::new(
+                        ErrorKind::Compose,
+                        "unterminated sequence in event stream",
+                    ))
+                }
+            }
+        }
+        let value = Value::sequence(items);
+        if let Some(name) = anchor {
+            self.anchors.insert(name, value.clone());
+        }
+        Ok(value)
     }
 
     /// Resolves a scalar event into a typed `Value`. Untagged scalars use the
@@ -186,5 +211,37 @@ mod tests {
     fn parse_rejects_multiple_documents() {
         let err = crate::api::parse("--- a\n--- b\n").unwrap_err();
         assert_eq!(err.kind(), crate::error::ErrorKind::Compose);
+    }
+
+    #[test]
+    fn flow_sequence_of_scalars() {
+        let v = parse("[1, 2, 3]\n");
+        let items = v.as_sequence().unwrap();
+        assert_eq!(items.len(), 3);
+        assert_eq!(items[0].as_int(), Some(1));
+        assert_eq!(items[2].as_int(), Some(3));
+    }
+
+    #[test]
+    fn block_sequence_of_scalars() {
+        let v = parse("- a\n- b\n");
+        let items = v.as_sequence().unwrap();
+        assert_eq!(items.len(), 2);
+        assert_eq!(items[0].as_str(), Some("a"));
+        assert_eq!(items[1].as_str(), Some("b"));
+    }
+
+    #[test]
+    fn nested_sequence() {
+        let v = parse("- - 1\n");
+        let outer = v.as_sequence().unwrap();
+        assert_eq!(outer.len(), 1);
+        let inner = outer[0].as_sequence().unwrap();
+        assert_eq!(inner[0].as_int(), Some(1));
+    }
+
+    #[test]
+    fn empty_flow_sequence_is_empty() {
+        assert_eq!(parse("[]\n").as_sequence().unwrap().len(), 0);
     }
 }
