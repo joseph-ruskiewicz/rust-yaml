@@ -838,9 +838,53 @@ impl<'a> Scanner<'a> {
         }
     }
 
-    /// Folded assembly — implemented in Task P4.4 (temporary literal behavior).
+    /// Joins folded block-scalar lines: a single break between two normal lines
+    /// becomes a space; blank lines become breaks; more-indented lines keep
+    /// their breaks. Then chomps.
     fn assemble_folded(lines: &[(String, bool)], chomp: Chomping) -> String {
-        Self::assemble_literal(lines, chomp)
+        let mut value = String::new();
+        // State machine:
+        //   normal  — previous content line was a normal (non-blank, non-more-indented) line
+        //   blank   — one or more blank lines have been seen; the `\n`s are already pushed
+        //   more    — previous content line was more-indented (break already pushed)
+        enum Prev { Start, Normal, Blank, More }
+        let mut prev = Prev::Start;
+        for (text, more) in lines.iter() {
+            if text.is_empty() {
+                // Blank line: emit one literal newline.  The surrounding folds
+                // (before and after) are consumed — they do NOT become spaces.
+                match prev {
+                    Prev::Normal => value.push('\n'), // replace the fold with a newline
+                    _ => value.push('\n'),            // additional blank → additional newline
+                }
+                prev = Prev::Blank;
+            } else if *more {
+                // More-indented line: emit a literal break before the content.
+                match prev {
+                    Prev::Start => {}
+                    Prev::Normal => value.push('\n'),
+                    Prev::Blank | Prev::More => value.push('\n'),
+                }
+                value.push_str(text);
+                prev = Prev::More;
+            } else {
+                // Normal line.
+                match prev {
+                    Prev::Start => {}
+                    Prev::Normal => value.push(' '),
+                    // After blank lines the breaks are already in `value`; no
+                    // additional separator needed.
+                    Prev::Blank => {}
+                    // After a more-indented line a literal newline separates it
+                    // from the following normal line.
+                    Prev::More => value.push('\n'),
+                }
+                value.push_str(text);
+                prev = Prev::Normal;
+            }
+        }
+        value.push('\n');
+        Self::apply_chomping(value, chomp)
     }
 }
 
@@ -2070,6 +2114,38 @@ mod tests {
                 TokenKind::BlockEnd,
                 TokenKind::StreamEnd,
             ]
+        );
+    }
+
+    #[test]
+    fn folded_block_scalar_basic() {
+        assert_eq!(
+            one_scalar(">\n  a\n  b\n"),
+            ("a b\n".to_string(), ScalarStyle::Folded)
+        );
+    }
+
+    #[test]
+    fn folded_block_scalar_blank_line_is_newline() {
+        assert_eq!(
+            one_scalar(">\n  a\n\n  b\n"),
+            ("a\nb\n".to_string(), ScalarStyle::Folded)
+        );
+    }
+
+    #[test]
+    fn folded_block_scalar_more_indented_kept_literal() {
+        assert_eq!(
+            one_scalar(">\n  a\n   b\n  c\n"),
+            ("a\n b\nc\n".to_string(), ScalarStyle::Folded)
+        );
+    }
+
+    #[test]
+    fn folded_block_scalar_strip() {
+        assert_eq!(
+            one_scalar(">-\n  a\n  b\n"),
+            ("a b".to_string(), ScalarStyle::Folded)
         );
     }
 }
