@@ -1,7 +1,7 @@
 //! Public, ergonomic entry points: source text -> `Value`.
 
 use crate::composer::compose;
-use crate::emitter::emit;
+use crate::emitter::{emit, emit_documents};
 use crate::error::{Error, ErrorKind, Result};
 use crate::options::{EmitOptions, ParseOptions};
 use crate::parser::parse_events;
@@ -47,4 +47,14 @@ pub fn to_string(value: &Value) -> Result<String> {
 /// Like [`to_string`], with explicit options.
 pub fn to_string_with(value: &Value, options: &EmitOptions) -> Result<String> {
     Ok(emit(value, options))
+}
+
+/// Serializes multiple values to a multi-document YAML stream using default options.
+pub fn to_string_documents(values: &[Value]) -> Result<String> {
+    to_string_documents_with(values, &EmitOptions::default())
+}
+
+/// Like [`to_string_documents`], with explicit options.
+pub fn to_string_documents_with(values: &[Value], options: &EmitOptions) -> Result<String> {
+    Ok(emit_documents(values, options))
 }

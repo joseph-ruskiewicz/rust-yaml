@@ -11,6 +11,19 @@ pub(crate) fn emit(value: &Value, options: &EmitOptions) -> String {
     out
 }
 
+/// Renders multiple values as a multi-document stream, separating documents
+/// with a `---` line. An empty slice yields an empty string.
+pub(crate) fn emit_documents(values: &[Value], options: &EmitOptions) -> String {
+    let mut out = String::new();
+    for (i, value) in values.iter().enumerate() {
+        if i > 0 {
+            out.push_str("---\n");
+        }
+        emit_block_value(value, 0, options, &mut out);
+    }
+    out
+}
+
 /// Indentation for `level` nesting levels, `options.indent` spaces each.
 fn pad(level: usize, options: &EmitOptions) -> String {
     " ".repeat(level * options.indent)
@@ -329,5 +342,36 @@ mod tests {
     fn deep_structure_roundtrips() {
         roundtrip("a:\n  - 1\n  - 2\nb:\n  c: d\n");
         roundtrip("- - 1\n  - 2\n- x\n");
+    }
+
+    #[test]
+    fn custom_indent_width() {
+        let v = crate::api::parse("outer:\n  inner: 7\n").unwrap();
+        let opts = EmitOptions {
+            indent: 4,
+            ..Default::default()
+        };
+        let text = crate::api::to_string_with(&v, &opts).unwrap();
+        assert_eq!(text, "outer:\n    inner: 7\n");
+    }
+
+    #[test]
+    fn documents_are_separated() {
+        let docs = vec![Value::int(1), Value::int(2)];
+        let text = crate::api::to_string_documents(&docs).unwrap();
+        assert_eq!(text, "1\n---\n2\n");
+    }
+
+    #[test]
+    fn empty_document_list_is_empty_string() {
+        assert_eq!(crate::api::to_string_documents(&[]).unwrap(), "");
+    }
+
+    #[test]
+    fn documents_roundtrip() {
+        let docs = crate::api::parse_documents("--- a\n--- b\n").unwrap();
+        let text = crate::api::to_string_documents(&docs).unwrap();
+        let docs2 = crate::api::parse_documents(&text).unwrap();
+        assert_eq!(docs, docs2);
     }
 }
