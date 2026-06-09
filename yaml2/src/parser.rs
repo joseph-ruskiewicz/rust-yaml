@@ -44,9 +44,7 @@ struct ParserState {
     tokens: Vec<Token>,
     pos: usize,
     events: Vec<Event>,
-    #[allow(dead_code)] // used in Task P5.11 (depth limit)
     depth: usize,
-    #[allow(dead_code)] // used in Task P5.11 (depth limit)
     max_depth: usize,
 }
 
@@ -156,11 +154,72 @@ impl ParserState {
         self.emit(EventKind::DocumentEnd, span);
     }
 
-    /// Parses a single node. Temporary stub (emits empty scalar); replaced in
-    /// Task P5.3.
     fn parse_node(&mut self) -> Result<()> {
-        self.emit_empty_scalar();
-        Ok(())
+        self.depth += 1;
+        if self.depth > self.max_depth {
+            self.depth -= 1;
+            return Err(Error::new(ErrorKind::LimitExceeded, "maximum nesting depth exceeded")
+                .with_span(self.span()));
+        }
+        let result = self.parse_node_inner();
+        self.depth -= 1;
+        result
+    }
+
+    fn parse_node_inner(&mut self) -> Result<()> {
+        // Node properties (anchor `&`, tag `!`) in any order.
+        let mut anchor: Option<String> = None;
+        let mut tag: Option<String> = None;
+        loop {
+            match self.peek() {
+                Some(TokenKind::Anchor(_)) => {
+                    if anchor.is_some() {
+                        return Err(self.error("a node may have at most one anchor"));
+                    }
+                    if let TokenKind::Anchor(name) = self.bump().kind {
+                        anchor = Some(name);
+                    }
+                }
+                Some(TokenKind::Tag(_)) => {
+                    if tag.is_some() {
+                        return Err(self.error("a node may have at most one tag"));
+                    }
+                    if let TokenKind::Tag(t) = self.bump().kind {
+                        tag = Some(t);
+                    }
+                }
+                _ => break,
+            }
+        }
+
+        let span = self.span();
+        match self.peek() {
+            Some(TokenKind::Scalar { .. }) => {
+                let token = self.bump();
+                if let TokenKind::Scalar { value, style } = token.kind {
+                    self.emit(EventKind::Scalar { value, style, anchor, tag }, token.span);
+                }
+                Ok(())
+            }
+            Some(TokenKind::Alias(_)) => {
+                if anchor.is_some() || tag.is_some() {
+                    return Err(self.error("an alias node cannot have an anchor or tag"));
+                }
+                let token = self.bump();
+                if let TokenKind::Alias(name) = token.kind {
+                    self.emit(EventKind::Alias(name), token.span);
+                }
+                Ok(())
+            }
+            _ => {
+                // Implicit empty (null) node — carries any collected properties.
+                self.emit(
+                    EventKind::Scalar { value: String::new(), style: ScalarStyle::Plain, anchor, tag },
+                    span,
+                );
+                Ok(())
+            }
+        }
     }
 }
 
@@ -195,5 +254,64 @@ mod tests {
         assert_eq!(p.next_event().map(|e| e.kind), Some(EventKind::StreamStart));
         assert_eq!(p.next_event().map(|e| e.kind), Some(EventKind::StreamEnd));
         assert_eq!(p.next_event(), None);
+    }
+
+    #[test]
+    fn bare_scalar_document() {
+        assert_eq!(
+            kinds("hello\n"),
+            vec![
+                EventKind::StreamStart,
+                EventKind::DocumentStart,
+                EventKind::Scalar { value: "hello".to_string(), style: ScalarStyle::Plain, anchor: None, tag: None },
+                EventKind::DocumentEnd,
+                EventKind::StreamEnd,
+            ]
+        );
+    }
+
+    #[test]
+    fn explicit_document_marker() {
+        assert_eq!(
+            kinds("--- hello\n"),
+            vec![
+                EventKind::StreamStart,
+                EventKind::DocumentStart,
+                EventKind::Scalar { value: "hello".to_string(), style: ScalarStyle::Plain, anchor: None, tag: None },
+                EventKind::DocumentEnd,
+                EventKind::StreamEnd,
+            ]
+        );
+    }
+
+    #[test]
+    fn two_documents() {
+        assert_eq!(
+            kinds("--- a\n--- b\n"),
+            vec![
+                EventKind::StreamStart,
+                EventKind::DocumentStart,
+                EventKind::Scalar { value: "a".to_string(), style: ScalarStyle::Plain, anchor: None, tag: None },
+                EventKind::DocumentEnd,
+                EventKind::DocumentStart,
+                EventKind::Scalar { value: "b".to_string(), style: ScalarStyle::Plain, anchor: None, tag: None },
+                EventKind::DocumentEnd,
+                EventKind::StreamEnd,
+            ]
+        );
+    }
+
+    #[test]
+    fn alias_node() {
+        assert_eq!(
+            kinds("*x\n"),
+            vec![
+                EventKind::StreamStart,
+                EventKind::DocumentStart,
+                EventKind::Alias("x".to_string()),
+                EventKind::DocumentEnd,
+                EventKind::StreamEnd,
+            ]
+        );
     }
 }
