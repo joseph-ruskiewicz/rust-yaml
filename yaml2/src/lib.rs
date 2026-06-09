@@ -16,7 +16,7 @@ mod value;
 mod serde_support;
 
 #[cfg(feature = "serde")]
-pub use serde_support::to_value;
+pub use serde_support::{from_value, to_value};
 
 pub use api::{
     parse, parse_documents, parse_documents_with, parse_with, to_string, to_string_documents,
