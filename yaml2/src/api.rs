@@ -1,8 +1,9 @@
 //! Public, ergonomic entry points: source text -> `Value`.
 
 use crate::composer::compose;
+use crate::emitter::emit;
 use crate::error::{Error, ErrorKind, Result};
-use crate::options::ParseOptions;
+use crate::options::{EmitOptions, ParseOptions};
 use crate::parser::parse_events;
 use crate::value::Value;
 
@@ -36,4 +37,14 @@ pub fn parse_documents(input: &str) -> Result<Vec<Value>> {
 pub fn parse_documents_with(input: &str, options: &ParseOptions) -> Result<Vec<Value>> {
     let events = parse_events(input, options)?;
     compose(&events, options)
+}
+
+/// Serializes a single value to a YAML document string using default options.
+pub fn to_string(value: &Value) -> Result<String> {
+    to_string_with(value, &EmitOptions::default())
+}
+
+/// Like [`to_string`], with explicit options.
+pub fn to_string_with(value: &Value, options: &EmitOptions) -> Result<String> {
+    Ok(emit(value, options))
 }

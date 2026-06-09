@@ -2,6 +2,7 @@
 
 mod api;
 mod composer;
+mod emitter;
 mod error;
 mod event;
 mod meta;
@@ -11,7 +12,9 @@ mod scalar;
 mod scanner;
 mod value;
 
-pub use api::{parse, parse_documents, parse_documents_with, parse_with};
+pub use api::{
+    parse, parse_documents, parse_documents_with, parse_with, to_string, to_string_with,
+};
 pub use error::{Error, ErrorKind, Position, Result, Span};
 pub use event::{Event, EventKind};
 pub use meta::{Comments, Meta, ScalarStyle};
