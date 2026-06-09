@@ -1294,6 +1294,85 @@ mod tests {
     }
 
     #[test]
+    fn mapping_with_empty_value() {
+        assert_eq!(
+            kinds("a:\n"),
+            vec![
+                EventKind::StreamStart,
+                EventKind::DocumentStart,
+                EventKind::MappingStart {
+                    anchor: None,
+                    tag: None
+                },
+                EventKind::Scalar {
+                    value: "a".to_string(),
+                    style: ScalarStyle::Plain,
+                    anchor: None,
+                    tag: None
+                },
+                EventKind::Scalar {
+                    value: "".to_string(),
+                    style: ScalarStyle::Plain,
+                    anchor: None,
+                    tag: None
+                },
+                EventKind::MappingEnd,
+                EventKind::DocumentEnd,
+                EventKind::StreamEnd,
+            ]
+        );
+    }
+
+    #[test]
+    fn sequence_with_empty_entry() {
+        assert_eq!(
+            kinds("-\n- a\n"),
+            vec![
+                EventKind::StreamStart,
+                EventKind::DocumentStart,
+                EventKind::SequenceStart {
+                    anchor: None,
+                    tag: None
+                },
+                EventKind::Scalar {
+                    value: "".to_string(),
+                    style: ScalarStyle::Plain,
+                    anchor: None,
+                    tag: None
+                },
+                EventKind::Scalar {
+                    value: "a".to_string(),
+                    style: ScalarStyle::Plain,
+                    anchor: None,
+                    tag: None
+                },
+                EventKind::SequenceEnd,
+                EventKind::DocumentEnd,
+                EventKind::StreamEnd,
+            ]
+        );
+    }
+
+    #[test]
+    fn empty_document() {
+        assert_eq!(
+            kinds("---\n"),
+            vec![
+                EventKind::StreamStart,
+                EventKind::DocumentStart,
+                EventKind::Scalar {
+                    value: "".to_string(),
+                    style: ScalarStyle::Plain,
+                    anchor: None,
+                    tag: None
+                },
+                EventKind::DocumentEnd,
+                EventKind::StreamEnd,
+            ]
+        );
+    }
+
+    #[test]
     fn unexpected_document_level_token_errors_without_hanging() {
         let err = parse_events("]", &ParseOptions::default()).unwrap_err();
         assert_eq!(err.kind(), crate::error::ErrorKind::Parse);
