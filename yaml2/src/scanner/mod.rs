@@ -117,9 +117,40 @@ impl<'a> Scanner<'a> {
             }
             '\'' => self.scan_single_quoted(start),
             '"' => self.scan_double_quoted(start),
-            _ => Err(Error::new(ErrorKind::Scan, format!("unexpected character {c:?}"))
-                .with_span(Span::new(start, self.reader.position()))),
+            _ => self.scan_plain(start),
         }
+    }
+
+    /// Scans a single-line plain scalar in flow context.
+    fn scan_plain(&mut self, start: Position) -> Result<Token> {
+        let mut value = String::new();
+        loop {
+            match self.reader.peek() {
+                None | Some('\n') | Some('\r') => break,
+                Some(',') | Some('[') | Some(']') | Some('{') | Some('}') => break,
+                Some(':') if self.indicator_terminator_next() => break,
+                Some(' ') | Some('\t') => {
+                    // A space before '#' ends the scalar (comment); otherwise the
+                    // space may be internal — keep it and let trailing trim handle
+                    // the end-of-scalar case.
+                    if self.reader.peek_nth(1) == Some('#') {
+                        break;
+                    }
+                    let c = self.reader.advance().unwrap();
+                    value.push(c);
+                }
+                Some(c) => {
+                    self.reader.advance();
+                    value.push(c);
+                }
+            }
+        }
+        let trimmed_len = value.trim_end_matches([' ', '\t']).len();
+        value.truncate(trimmed_len);
+        Ok(Token::new(
+            TokenKind::Scalar { value, style: ScalarStyle::Plain },
+            Span::new(start, self.reader.position()),
+        ))
     }
 
     fn scan_single_quoted(&mut self, start: Position) -> Result<Token> {
@@ -489,5 +520,67 @@ mod tests {
     fn invalid_escape_errors() {
         let err = tokenize("\"\\q\"", Limits::default()).unwrap_err();
         assert_eq!(err.kind(), crate::error::ErrorKind::Scan);
+    }
+
+    #[test]
+    fn plain_scalar_simple() {
+        assert_eq!(
+            scalars("hello"),
+            vec![("hello".to_string(), ScalarStyle::Plain)]
+        );
+    }
+
+    #[test]
+    fn plain_scalar_keeps_internal_spaces_trims_trailing() {
+        assert_eq!(
+            scalars("the quick brown   "),
+            vec![("the quick brown".to_string(), ScalarStyle::Plain)]
+        );
+    }
+
+    #[test]
+    fn plain_scalar_with_colon_in_content() {
+        assert_eq!(
+            scalars("http://x"),
+            vec![("http://x".to_string(), ScalarStyle::Plain)]
+        );
+    }
+
+    #[test]
+    fn plain_scalar_terminated_by_value_indicator() {
+        assert_eq!(
+            kinds("key: value"),
+            vec![
+                TokenKind::StreamStart,
+                TokenKind::Scalar { value: "key".to_string(), style: ScalarStyle::Plain },
+                TokenKind::Value,
+                TokenKind::Scalar { value: "value".to_string(), style: ScalarStyle::Plain },
+                TokenKind::StreamEnd,
+            ]
+        );
+    }
+
+    #[test]
+    fn plain_scalar_in_flow_sequence() {
+        assert_eq!(
+            kinds("[a, b]"),
+            vec![
+                TokenKind::StreamStart,
+                TokenKind::FlowSequenceStart,
+                TokenKind::Scalar { value: "a".to_string(), style: ScalarStyle::Plain },
+                TokenKind::FlowEntry,
+                TokenKind::Scalar { value: "b".to_string(), style: ScalarStyle::Plain },
+                TokenKind::FlowSequenceEnd,
+                TokenKind::StreamEnd,
+            ]
+        );
+    }
+
+    #[test]
+    fn plain_scalar_terminated_by_comment() {
+        assert_eq!(
+            scalars("value # trailing comment"),
+            vec![("value".to_string(), ScalarStyle::Plain)]
+        );
     }
 }
