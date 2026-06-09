@@ -684,6 +684,39 @@ b: [*a, *a]
     }
 
     #[test]
+    fn core_shorthand_tag_still_types() {
+        // Regression: the resolved `tag:yaml.org,2002:int` types as an int.
+        assert_eq!(parse("!!int 5\n").as_int(), Some(5));
+    }
+
+    #[test]
+    fn verbatim_core_tag_types() {
+        assert_eq!(parse("!<tag:yaml.org,2002:int> 5\n").as_int(), Some(5));
+        assert_eq!(parse("!<tag:yaml.org,2002:str> 5\n").as_str(), Some("5"));
+    }
+
+    #[test]
+    fn local_tag_resolves_to_string() {
+        // A local `!lang` tag leaves the scalar a string.
+        assert_eq!(parse("!lang hello\n").as_str(), Some("hello"));
+    }
+
+    #[test]
+    fn custom_directive_tag_resolves_to_string() {
+        let input = "%TAG !e! tag:example.com,2000:\n--- !e!color red\n";
+        assert_eq!(parse(input).as_str(), Some("red"));
+    }
+
+    #[test]
+    fn directive_scoped_typing_in_mapping() {
+        // A core tag via the default secondary handle still types inside a map.
+        let v = parse("count: !!int 3\nname: !!str 7\n");
+        let m = v.as_mapping().unwrap();
+        assert_eq!(m.get(&key("count")).unwrap().as_int(), Some(3));
+        assert_eq!(m.get(&key("name")).unwrap().as_str(), Some("7"));
+    }
+
+    #[test]
     fn realistic_document_tree() {
         let input = "\
 name: Ada
