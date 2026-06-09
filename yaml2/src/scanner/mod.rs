@@ -116,6 +116,7 @@ impl<'a> Scanner<'a> {
                 Ok(self.single_char(TokenKind::Key, start))
             }
             '\'' => self.scan_single_quoted(start),
+            '"' => self.scan_double_quoted(start),
             _ => Err(Error::new(ErrorKind::Scan, format!("unexpected character {c:?}"))
                 .with_span(Span::new(start, self.reader.position()))),
         }
@@ -153,6 +154,96 @@ impl<'a> Scanner<'a> {
                 }
             }
         }
+    }
+
+    fn scan_double_quoted(&mut self, start: Position) -> Result<Token> {
+        self.reader.advance(); // opening quote
+        let mut value = String::new();
+        loop {
+            match self.reader.peek() {
+                None => {
+                    return Err(Error::new(
+                        ErrorKind::Scan,
+                        "unterminated double-quoted scalar",
+                    )
+                    .with_span(Span::new(start, self.reader.position())));
+                }
+                Some('"') => {
+                    self.reader.advance();
+                    return Ok(Token::new(
+                        TokenKind::Scalar { value, style: ScalarStyle::DoubleQuoted },
+                        Span::new(start, self.reader.position()),
+                    ));
+                }
+                Some('\\') => {
+                    self.reader.advance(); // consume backslash
+                    let ch = self.scan_escape(start)?;
+                    value.push(ch);
+                }
+                Some(c) => {
+                    self.reader.advance();
+                    value.push(c);
+                }
+            }
+        }
+    }
+
+    /// Resolves a double-quoted escape sequence (the backslash is already
+    /// consumed) into a single character.
+    fn scan_escape(&mut self, start: Position) -> Result<char> {
+        let esc = self.reader.advance().ok_or_else(|| {
+            Error::new(ErrorKind::Scan, "unterminated escape sequence")
+                .with_span(Span::new(start, self.reader.position()))
+        })?;
+        let ch = match esc {
+            '0' => '\u{0}',
+            'a' => '\u{7}',
+            'b' => '\u{8}',
+            't' | '\t' => '\u{9}',
+            'n' => '\u{a}',
+            'v' => '\u{b}',
+            'f' => '\u{c}',
+            'r' => '\u{d}',
+            'e' => '\u{1b}',
+            ' ' => ' ',
+            '"' => '"',
+            '/' => '/',
+            '\\' => '\\',
+            'N' => '\u{85}',
+            '_' => '\u{a0}',
+            'L' => '\u{2028}',
+            'P' => '\u{2029}',
+            'x' => self.scan_hex_escape(2, start)?,
+            'u' => self.scan_hex_escape(4, start)?,
+            'U' => self.scan_hex_escape(8, start)?,
+            other => {
+                return Err(Error::new(
+                    ErrorKind::Scan,
+                    format!("invalid escape sequence '\\{other}'"),
+                )
+                .with_span(Span::new(start, self.reader.position())));
+            }
+        };
+        Ok(ch)
+    }
+
+    /// Reads `n` hex digits and converts them to a Unicode scalar value.
+    fn scan_hex_escape(&mut self, n: usize, start: Position) -> Result<char> {
+        let mut code: u32 = 0;
+        for _ in 0..n {
+            let d = self.reader.advance().and_then(|c| c.to_digit(16)).ok_or_else(|| {
+                Error::new(ErrorKind::Scan, "invalid hex escape")
+                    .with_span(Span::new(start, self.reader.position()))
+            })?;
+            code = code * 16 + d;
+        }
+        char::from_u32(code).ok_or_else(|| {
+            Error::new(
+                ErrorKind::Scan,
+                format!("escape resolves to invalid Unicode scalar U+{code:04X}"),
+            )
+            .with_span(Span::new(start, self.reader.position()))
+        })
     }
 
     /// True if the input begins with `marker` followed by whitespace, a line
@@ -351,6 +442,52 @@ mod tests {
     #[test]
     fn unterminated_single_quote_errors() {
         let err = tokenize("'oops", Limits::default()).unwrap_err();
+        assert_eq!(err.kind(), crate::error::ErrorKind::Scan);
+    }
+
+    #[test]
+    fn double_quoted_basic() {
+        assert_eq!(
+            scalars("\"hello\""),
+            vec![("hello".to_string(), ScalarStyle::DoubleQuoted)]
+        );
+    }
+
+    #[test]
+    fn double_quoted_simple_escapes() {
+        assert_eq!(
+            scalars("\"a\\tb\\nc\\\"d\\\\e\""),
+            vec![("a\tb\nc\"d\\e".to_string(), ScalarStyle::DoubleQuoted)]
+        );
+    }
+
+    #[test]
+    fn double_quoted_unicode_escapes() {
+        // \x41 == 'A', B == 'B', \U00000043 == 'C'
+        assert_eq!(
+            scalars("\"\\x41\\u0042\\U00000043\""),
+            vec![("ABC".to_string(), ScalarStyle::DoubleQuoted)]
+        );
+    }
+
+    #[test]
+    fn double_quoted_null_and_special_named_escapes() {
+        // \0 -> NUL, \N -> U+0085, \_ -> U+00A0
+        let got = scalars("\"\\0\\N\\_\"");
+        assert_eq!(got.len(), 1);
+        assert_eq!(got[0].1, ScalarStyle::DoubleQuoted);
+        assert_eq!(got[0].0, "\u{0}\u{85}\u{a0}");
+    }
+
+    #[test]
+    fn unterminated_double_quote_errors() {
+        let err = tokenize("\"oops", Limits::default()).unwrap_err();
+        assert_eq!(err.kind(), crate::error::ErrorKind::Scan);
+    }
+
+    #[test]
+    fn invalid_escape_errors() {
+        let err = tokenize("\"\\q\"", Limits::default()).unwrap_err();
         assert_eq!(err.kind(), crate::error::ErrorKind::Scan);
     }
 }
