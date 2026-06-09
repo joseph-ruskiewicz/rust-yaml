@@ -1,7 +1,7 @@
 //! Error, source-position, and span types.
 
 /// A location in the source: byte offset (0-based), line and column (1-based).
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Position {
     pub offset: usize,
     pub line: usize,
@@ -16,6 +16,12 @@ impl Position {
     /// The position at the very start of any input.
     pub fn start() -> Self {
         Self { offset: 0, line: 1, column: 1 }
+    }
+}
+
+impl Default for Position {
+    fn default() -> Self {
+        Self::start()
     }
 }
 
@@ -42,6 +48,12 @@ mod tests {
         assert_eq!(p.offset, 0);
         assert_eq!(p.line, 1);
         assert_eq!(p.column, 1);
+    }
+
+    #[test]
+    fn position_default_equals_start() {
+        assert_eq!(Position::default(), Position::start());
+        assert_eq!(Span::default().start, Position::start());
     }
 
     #[test]
