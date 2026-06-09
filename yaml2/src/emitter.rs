@@ -374,4 +374,42 @@ mod tests {
         let docs2 = crate::api::parse_documents(&text).unwrap();
         assert_eq!(docs, docs2);
     }
+
+    #[test]
+    fn realistic_document_roundtrips() {
+        let input = "\
+name: Ada
+active: true
+scores:
+  - 10
+  - 20
+address:
+  city: Portland
+  zip: \"97201\"
+tags: [x, y, z]
+";
+        roundtrip(input);
+    }
+
+    #[test]
+    fn mapping_with_empty_and_null_roundtrips() {
+        roundtrip("a:\nb: []\nc: {}\n");
+    }
+
+    #[test]
+    fn special_strings_roundtrip() {
+        roundtrip("- \"\"\n- \"true\"\n- \"42\"\n- \"a: b\"\n- \" leading\"\n");
+    }
+
+    #[test]
+    fn key_order_is_preserved() {
+        let v = crate::api::parse("z: 1\na: 2\nm: 3\n").unwrap();
+        let text = crate::api::to_string(&v).unwrap();
+        assert_eq!(text, "z: 1\na: 2\nm: 3\n");
+    }
+
+    #[test]
+    fn deeply_nested_roundtrips() {
+        roundtrip("a:\n  b:\n    c:\n      - 1\n      - d: e\n");
+    }
 }
