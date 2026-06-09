@@ -47,6 +47,13 @@ pub(crate) struct Scanner<'a> {
     simple_key: Option<SimpleKey>,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Chomping {
+    Clip,
+    Strip,
+    Keep,
+}
+
 /// A buffered marker recording that a just-produced node might be a block
 /// mapping key, to be confirmed when a `:` is found on the same line.
 struct SimpleKey {
@@ -227,6 +234,8 @@ impl<'a> Scanner<'a> {
             '*' => self.scan_anchor_or_alias(start, false),
             '!' => Ok(self.scan_tag(start)),
             '-' if self.flow_depth == 0 && self.block_entry_next() => self.fetch_block_entry(start),
+            '|' if self.flow_depth == 0 => self.scan_block_scalar(true, start),
+            '>' if self.flow_depth == 0 => self.scan_block_scalar(false, start),
             _ => self.scan_plain(start),
         }
     }
@@ -275,7 +284,10 @@ impl<'a> Scanner<'a> {
     /// Whether `c` begins a node that could serve as a block mapping key
     /// (scalar, anchor, alias, or tag — i.e. not a structural indicator).
     fn can_start_simple_key(c: char) -> bool {
-        !matches!(c, '-' | '?' | ':' | ',' | '[' | ']' | '{' | '}' | '#')
+        !matches!(
+            c,
+            '-' | '?' | ':' | ',' | '[' | ']' | '{' | '}' | '#' | '|' | '>'
+        )
     }
 
     /// Handles `:` in block context: converts a buffered simple key into a
@@ -652,6 +664,169 @@ impl<'a> Scanner<'a> {
                 | Some('}')
         )
     }
+
+    /// Consumes a YAML line break (`\n`, `\r\n`, or lone `\r`).
+    fn consume_line_break(&mut self) {
+        match self.reader.peek() {
+            Some('\r') => {
+                self.reader.advance();
+                if self.reader.peek() == Some('\n') {
+                    self.reader.advance();
+                }
+            }
+            Some('\n') => {
+                self.reader.advance();
+            }
+            _ => {}
+        }
+    }
+
+    /// Parses the block-scalar header after `|`/`>`: chomping (`-`/`+`) and an
+    /// indentation indicator (1-9) in any order, then skips trailing spaces, an
+    /// optional comment, and the header line break.
+    fn scan_block_scalar_header(&mut self) -> (Chomping, Option<usize>) {
+        let mut chomp = Chomping::Clip;
+        let mut indent: Option<usize> = None;
+        loop {
+            match self.reader.peek() {
+                Some('-') if chomp == Chomping::Clip => {
+                    self.reader.advance();
+                    chomp = Chomping::Strip;
+                }
+                Some('+') if chomp == Chomping::Clip => {
+                    self.reader.advance();
+                    chomp = Chomping::Keep;
+                }
+                Some(c @ '1'..='9') if indent.is_none() => {
+                    self.reader.advance();
+                    indent = Some((c as u8 - b'0') as usize);
+                }
+                _ => break,
+            }
+        }
+        while matches!(self.reader.peek(), Some(' ') | Some('\t')) {
+            self.reader.advance();
+        }
+        if self.reader.peek() == Some('#') {
+            while let Some(c) = self.reader.peek() {
+                if c == '\n' || c == '\r' {
+                    break;
+                }
+                self.reader.advance();
+            }
+        }
+        self.consume_line_break();
+        (chomp, indent)
+    }
+
+    /// Scans a block scalar (`literal` = `|`, else `>`).
+    fn scan_block_scalar(&mut self, literal: bool, start: Position) -> Result<Token> {
+        self.reader.advance(); // '|' or '>'
+        let (chomp, explicit_indent) = self.scan_block_scalar_header();
+        let parent = self.indent; // 0-based; -1 at root
+
+        let mut content_indent: Option<usize> = explicit_indent.map(|n| {
+            let base = if parent < 0 { 0 } else { (parent + 1) as usize };
+            base + n - 1
+        });
+
+        let mut lines: Vec<(String, bool)> = Vec::new();
+        loop {
+            let mut sp = 0usize;
+            while self.reader.peek_nth(sp) == Some(' ') {
+                sp += 1;
+            }
+            let after = self.reader.peek_nth(sp);
+            if after.is_none() {
+                break;
+            }
+            let blank = matches!(after, Some('\n') | Some('\r'));
+            if blank {
+                for _ in 0..sp {
+                    self.reader.advance();
+                }
+                self.consume_line_break();
+                lines.push((String::new(), false));
+                continue;
+            }
+            let ci = match content_indent {
+                Some(ci) => ci,
+                None => {
+                    if (sp as i64) <= parent {
+                        break;
+                    }
+                    content_indent = Some(sp);
+                    sp
+                }
+            };
+            if sp < ci {
+                break;
+            }
+            for _ in 0..ci {
+                self.reader.advance();
+            }
+            let more_indented = sp > ci;
+            let mut text = String::new();
+            while let Some(c) = self.reader.peek() {
+                if c == '\n' || c == '\r' {
+                    break;
+                }
+                text.push(c);
+                self.reader.advance();
+            }
+            lines.push((text, more_indented));
+            if self.reader.peek().is_none() {
+                break;
+            }
+            self.consume_line_break();
+        }
+
+        let value = if literal {
+            Self::assemble_literal(&lines, chomp)
+        } else {
+            Self::assemble_folded(&lines, chomp)
+        };
+        let style = if literal {
+            ScalarStyle::Literal
+        } else {
+            ScalarStyle::Folded
+        };
+        Ok(Token::new(
+            TokenKind::Scalar { value, style },
+            Span::new(start, self.reader.position()),
+        ))
+    }
+
+    /// Joins literal block-scalar lines (every line keeps its break), then chomps.
+    fn assemble_literal(lines: &[(String, bool)], chomp: Chomping) -> String {
+        let mut value = String::new();
+        for (text, _) in lines {
+            value.push_str(text);
+            value.push('\n');
+        }
+        Self::apply_chomping(value, chomp)
+    }
+
+    /// Applies the chomping indicator to a value's trailing line breaks.
+    fn apply_chomping(value: String, chomp: Chomping) -> String {
+        match chomp {
+            Chomping::Strip => value.trim_end_matches('\n').to_string(),
+            Chomping::Clip => {
+                let trimmed = value.trim_end_matches('\n');
+                if trimmed.is_empty() {
+                    String::new()
+                } else {
+                    format!("{trimmed}\n")
+                }
+            }
+            Chomping::Keep => value,
+        }
+    }
+
+    /// Folded assembly — implemented in Task P4.4 (temporary literal behavior).
+    fn assemble_folded(lines: &[(String, bool)], chomp: Chomping) -> String {
+        Self::assemble_literal(lines, chomp)
+    }
 }
 
 #[cfg(test)]
@@ -783,6 +958,51 @@ mod tests {
         let toks = tokenize("", Limits::default()).unwrap();
         assert_eq!(toks[0].span.start, crate::error::Position::new(0, 1, 1));
         assert_eq!(toks[0].span.end, crate::error::Position::new(0, 1, 1));
+    }
+
+    fn one_scalar(input: &str) -> (String, ScalarStyle) {
+        let mut v: Vec<(String, ScalarStyle)> = tokenize(input, Limits::default())
+            .unwrap()
+            .into_iter()
+            .filter_map(|t| match t.kind {
+                TokenKind::Scalar { value, style } => Some((value, style)),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(v.len(), 1, "expected exactly one scalar");
+        v.pop().unwrap()
+    }
+
+    #[test]
+    fn literal_block_scalar_basic() {
+        assert_eq!(
+            one_scalar("|\n  line one\n  line two\n"),
+            ("line one\nline two\n".to_string(), ScalarStyle::Literal)
+        );
+    }
+
+    #[test]
+    fn literal_block_scalar_strip() {
+        assert_eq!(
+            one_scalar("|-\n  a\n  b\n"),
+            ("a\nb".to_string(), ScalarStyle::Literal)
+        );
+    }
+
+    #[test]
+    fn literal_block_scalar_keep() {
+        assert_eq!(
+            one_scalar("|+\n  a\n\n"),
+            ("a\n\n".to_string(), ScalarStyle::Literal)
+        );
+    }
+
+    #[test]
+    fn literal_block_scalar_blank_line_inside() {
+        assert_eq!(
+            one_scalar("|\n  a\n\n  b\n"),
+            ("a\n\nb\n".to_string(), ScalarStyle::Literal)
+        );
     }
 
     fn scalars(input: &str) -> Vec<(String, ScalarStyle)> {
