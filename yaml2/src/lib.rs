@@ -2,6 +2,7 @@
 
 mod error;
 mod event;
+mod parser;
 mod meta;
 mod options;
 mod scalar;
@@ -12,6 +13,7 @@ pub use error::{Error, ErrorKind, Position, Result, Span};
 pub use event::{Event, EventKind};
 pub use meta::{Comments, Meta, ScalarStyle};
 pub use options::{EmitOptions, Limits, MergeKeys, ParseOptions, Schema};
+pub use parser::{parse_events, Parser};
 pub use value::{Mapping, Value, ValueData};
 
 #[cfg(test)]
