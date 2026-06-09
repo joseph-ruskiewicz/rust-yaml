@@ -129,6 +129,9 @@ impl<'a> Scanner<'a> {
     /// Scans a single-line plain scalar in flow context.
     fn scan_plain(&mut self, start: Position) -> Result<Token> {
         let mut value = String::new();
+        // Position immediately after the last non-whitespace character consumed,
+        // so the span does not include trailing whitespace that gets trimmed.
+        let mut content_end = start;
         loop {
             match self.reader.peek() {
                 None | Some('\n') | Some('\r') => break,
@@ -147,6 +150,7 @@ impl<'a> Scanner<'a> {
                 Some(c) => {
                     self.reader.advance();
                     value.push(c);
+                    content_end = self.reader.position();
                 }
             }
         }
@@ -163,7 +167,7 @@ impl<'a> Scanner<'a> {
                 value,
                 style: ScalarStyle::Plain,
             },
-            Span::new(start, self.reader.position()),
+            Span::new(start, content_end),
         ))
     }
 
@@ -838,5 +842,16 @@ mod tests {
         assert_eq!(comma.kind, TokenKind::FlowEntry);
         assert_eq!(comma.span.start, crate::error::Position::new(1, 1, 2));
         assert_eq!(comma.span.end, crate::error::Position::new(2, 1, 3));
+    }
+
+    #[test]
+    fn plain_scalar_span_excludes_trailing_whitespace() {
+        // "a , b": scalar "a" with a trailing space before the comma.
+        let toks = tokenize("a , b", Limits::default()).unwrap();
+        let scalar_a = &toks[1];
+        assert!(matches!(&scalar_a.kind, TokenKind::Scalar { value, .. } if value == "a"));
+        // Span must end right after 'a' (offset 1, col 2), NOT after the space.
+        assert_eq!(scalar_a.span.start, crate::error::Position::new(0, 1, 1));
+        assert_eq!(scalar_a.span.end, crate::error::Position::new(1, 1, 2));
     }
 }
