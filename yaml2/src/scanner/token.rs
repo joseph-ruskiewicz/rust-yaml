@@ -46,7 +46,7 @@ pub(crate) enum TokenKind {
     FlowMappingEnd,
     /// `,`
     FlowEntry,
-    /// `?` (explicit key indicator)
+    /// A mapping key indicator (`?` in flow; synthesized before block mapping keys).
     Key,
     /// `:` (value indicator)
     Value,

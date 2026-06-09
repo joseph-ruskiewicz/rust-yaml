@@ -1,6 +1,6 @@
 //! The scanner (lexer): turns source text into a flat token stream.
 //!
-//! This layer is consumed by the parser (Plan 4); until then its public(crate)
+//! This layer is consumed by the parser (Plan 5); until then its public(crate)
 //! surface is exercised only by tests, so dead-code is allowed module-wide.
 #![allow(dead_code)]
 
@@ -391,6 +391,12 @@ impl<'a> Scanner<'a> {
         let mut name = String::new();
         while let Some(c) = self.reader.peek() {
             if c.is_whitespace() || matches!(c, ',' | '[' | ']' | '{' | '}') {
+                break;
+            }
+            // A ':' that is a value indicator (followed by space/flow/EOF) ends
+            // the name, so an alias/anchor/tag can serve as a mapping key
+            // (`*x: v`). A ':' followed by other content stays in the name.
+            if c == ':' && self.indicator_terminator_next() {
                 break;
             }
             self.reader.advance();
@@ -1715,6 +1721,45 @@ mod tests {
                     style: ScalarStyle::DoubleQuoted
                 },
                 TokenKind::FlowMappingEnd,
+                TokenKind::StreamEnd,
+            ]
+        );
+    }
+
+    #[test]
+    fn alias_as_block_mapping_key() {
+        // `*x: v` -> the alias is the key; the ':' is a value indicator.
+        assert_eq!(
+            kinds("*x: v\n"),
+            vec![
+                TokenKind::StreamStart,
+                TokenKind::BlockMappingStart,
+                TokenKind::Key,
+                TokenKind::Alias("x".to_string()),
+                TokenKind::Value,
+                TokenKind::Scalar {
+                    value: "v".to_string(),
+                    style: ScalarStyle::Plain
+                },
+                TokenKind::BlockEnd,
+                TokenKind::StreamEnd,
+            ]
+        );
+    }
+
+    #[test]
+    fn anchor_name_may_contain_non_indicator_colon() {
+        // `&x:y` (no space after ':') -> ':' is NOT a value indicator, so it is
+        // part of the anchor name.
+        assert_eq!(
+            kinds("&x:y 1\n"),
+            vec![
+                TokenKind::StreamStart,
+                TokenKind::Anchor("x:y".to_string()),
+                TokenKind::Scalar {
+                    value: "1".to_string(),
+                    style: ScalarStyle::Plain
+                },
                 TokenKind::StreamEnd,
             ]
         );
