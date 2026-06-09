@@ -219,6 +219,44 @@ impl Hash for Mapping {
     }
 }
 
+impl Mapping {
+    pub fn new() -> Self {
+        Self { entries: IndexMap::new() }
+    }
+
+    pub fn insert(&mut self, key: Value, value: Value) -> Option<Value> {
+        self.entries.insert(key, value)
+    }
+
+    pub fn get(&self, key: &Value) -> Option<&Value> {
+        self.entries.get(key)
+    }
+
+    pub fn get_mut(&mut self, key: &Value) -> Option<&mut Value> {
+        self.entries.get_mut(key)
+    }
+
+    pub fn contains_key(&self, key: &Value) -> bool {
+        self.entries.contains_key(key)
+    }
+
+    pub fn len(&self) -> usize {
+        self.entries.len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.entries.is_empty()
+    }
+
+    pub fn iter(&self) -> indexmap::map::Iter<'_, Value, Value> {
+        self.entries.iter()
+    }
+
+    pub fn iter_mut(&mut self) -> indexmap::map::IterMut<'_, Value, Value> {
+        self.entries.iter_mut()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -286,6 +324,40 @@ mod tests {
         fn with_meta_for_test(mut self) -> Self {
             self.set_meta_box(Some(Box::new(Meta::default())));
             self
+        }
+    }
+
+    #[test]
+    fn mapping_preserves_insertion_order() {
+        let mut m = Mapping::new();
+        m.insert(Value::string("b"), Value::int(2));
+        m.insert(Value::string("a"), Value::int(1));
+        m.insert(Value::string("c"), Value::int(3));
+
+        let keys: Vec<&str> = m
+            .iter()
+            .map(|(k, _)| k.as_str_for_test())
+            .collect();
+        assert_eq!(keys, ["b", "a", "c"]);
+    }
+
+    #[test]
+    fn mapping_get_and_len() {
+        let mut m = Mapping::new();
+        assert!(m.is_empty());
+        m.insert(Value::string("k"), Value::int(9));
+        assert_eq!(m.len(), 1);
+        assert_eq!(m.get(&Value::string("k")), Some(&Value::int(9)));
+        assert_eq!(m.get(&Value::string("missing")), None);
+    }
+
+    impl Value {
+        // Test-only helper until accessors land in Task 6.
+        fn as_str_for_test(&self) -> &str {
+            match self.data() {
+                ValueData::String(s) => s,
+                _ => panic!("not a string"),
+            }
         }
     }
 }
