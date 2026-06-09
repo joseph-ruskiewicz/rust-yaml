@@ -145,6 +145,12 @@ impl<'a> Scanner<'a> {
                 }
             }
         }
+        // `scan_plain` is only entered on a non-break character (break chars are
+        // handled by earlier `scan_content` arms or the loop above), so at least
+        // one character is always consumed.
+        debug_assert!(!value.is_empty(), "scan_plain produced an empty scalar");
+        // Internal whitespace is accumulated during the loop; only trailing
+        // spaces/tabs are stripped here.
         let trimmed_len = value.trim_end_matches([' ', '\t']).len();
         value.truncate(trimmed_len);
         Ok(Token::new(
@@ -581,6 +587,29 @@ mod tests {
         assert_eq!(
             scalars("value # trailing comment"),
             vec![("value".to_string(), ScalarStyle::Plain)]
+        );
+    }
+
+    #[test]
+    fn plain_scalar_hash_without_preceding_space_is_content() {
+        // '#' only starts a comment when preceded by whitespace.
+        assert_eq!(
+            scalars("a#b"),
+            vec![("a#b".to_string(), ScalarStyle::Plain)]
+        );
+    }
+
+    #[test]
+    fn plain_scalar_trailing_colon_at_eof() {
+        // 'abc:' -> scalar "abc" then a Value token (':' at EOF is an indicator).
+        assert_eq!(
+            kinds("abc:"),
+            vec![
+                TokenKind::StreamStart,
+                TokenKind::Scalar { value: "abc".to_string(), style: ScalarStyle::Plain },
+                TokenKind::Value,
+                TokenKind::StreamEnd,
+            ]
         );
     }
 }
