@@ -1373,6 +1373,41 @@ mod tests {
     }
 
     #[test]
+    fn deeply_nested_flow_exceeds_max_depth() {
+        let opts = ParseOptions {
+            limits: crate::options::Limits {
+                max_depth: 16,
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        let input = "[".repeat(50) + &"]".repeat(50);
+        let err = parse_events(&input, &opts).unwrap_err();
+        assert_eq!(err.kind(), crate::error::ErrorKind::LimitExceeded);
+    }
+
+    #[test]
+    fn nesting_within_limit_is_ok() {
+        let opts = ParseOptions {
+            limits: crate::options::Limits {
+                max_depth: 16,
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        // 5 levels of flow sequence nesting, well within the limit.
+        assert!(parse_events("[[[[[x]]]]]", &opts).is_ok());
+    }
+
+    #[test]
+    fn malformed_double_colon_is_rejected() {
+        // `a: b: c` yields a token stream with a mapping start followed by a
+        // Value with no Key — a Parse error, not garbage events.
+        let err = parse_events("a: b: c\n", &ParseOptions::default()).unwrap_err();
+        assert_eq!(err.kind(), crate::error::ErrorKind::Parse);
+    }
+
+    #[test]
     fn unexpected_document_level_token_errors_without_hanging() {
         let err = parse_events("]", &ParseOptions::default()).unwrap_err();
         assert_eq!(err.kind(), crate::error::ErrorKind::Parse);
