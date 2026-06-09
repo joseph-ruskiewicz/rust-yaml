@@ -47,6 +47,9 @@ pub(crate) struct Scanner<'a> {
     simple_key: Option<SimpleKey>,
     /// Tag handle -> prefix map for the current document (`%TAG` directives).
     tag_handles: HashMap<String, String>,
+    /// True when the next directive or document marker should reset the handle
+    /// map (directives apply to one document only).
+    next_doc_needs_reset: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -82,6 +85,7 @@ impl<'a> Scanner<'a> {
             simple_key_allowed: true,
             simple_key: None,
             tag_handles: Self::default_tag_handles(),
+            next_doc_needs_reset: true,
         }
     }
 
@@ -132,6 +136,15 @@ impl<'a> Scanner<'a> {
 
         self.skip_to_next_token();
         self.stale_simple_key();
+
+        // A `%` at column 1 in block context begins a directive line.
+        if self.flow_depth == 0
+            && self.reader.peek() == Some('%')
+            && self.reader.position().column == 1
+        {
+            self.scan_directive()?;
+            return Ok(());
+        }
 
         // Block context: process indentation at the start of a line.
         if self.flow_depth == 0 {
@@ -201,12 +214,18 @@ impl<'a> Scanner<'a> {
                 self.unroll_indent(-1);
                 self.remove_simple_key();
                 self.simple_key_allowed = true;
+                if self.next_doc_needs_reset {
+                    self.reset_tag_handles();
+                }
+                self.next_doc_needs_reset = true;
                 Ok(self.scan_marker(TokenKind::DocumentStart, start))
             }
             '.' if self.marker_ahead("...") => {
                 self.unroll_indent(-1);
                 self.remove_simple_key();
                 self.simple_key_allowed = true;
+                self.reset_tag_handles();
+                self.next_doc_needs_reset = true;
                 Ok(self.scan_marker(TokenKind::DocumentEnd, start))
             }
             '[' => {
@@ -472,6 +491,58 @@ impl<'a> Scanner<'a> {
             TokenKind::Alias(name)
         };
         Ok(Token::new(kind, Span::new(start, self.reader.position())))
+    }
+
+    /// Resets the tag handle map to its document defaults.
+    fn reset_tag_handles(&mut self) {
+        self.tag_handles = Self::default_tag_handles();
+    }
+
+    /// Scans a directive line (`%YAML ...` or `%TAG ...`) at column 1, updating
+    /// the handle map. Directives apply to the upcoming document only, so the
+    /// first directive of a new document block resets the map. Produces no token.
+    fn scan_directive(&mut self) -> Result<()> {
+        if self.next_doc_needs_reset {
+            self.reset_tag_handles();
+            self.next_doc_needs_reset = false;
+        }
+        self.reader.advance(); // '%'
+        let name = self.take_directive_word();
+        if name == "TAG" {
+            self.skip_inline_blanks();
+            let handle = self.take_directive_word();
+            self.skip_inline_blanks();
+            let prefix = self.take_directive_word();
+            if !handle.is_empty() && !prefix.is_empty() {
+                self.tag_handles.insert(handle, prefix);
+            }
+        }
+        // `%YAML` and any unknown directive are accepted and ignored.
+        // Consume the rest of the line (the line break is left for the caller).
+        while !matches!(self.reader.peek(), None | Some('\n') | Some('\r')) {
+            self.reader.advance();
+        }
+        Ok(())
+    }
+
+    /// Consumes a run of non-whitespace characters (a directive token).
+    fn take_directive_word(&mut self) -> String {
+        let mut word = String::new();
+        while let Some(c) = self.reader.peek() {
+            if c.is_whitespace() {
+                break;
+            }
+            self.reader.advance();
+            word.push(c);
+        }
+        word
+    }
+
+    /// Consumes inline spaces and tabs (not line breaks).
+    fn skip_inline_blanks(&mut self) {
+        while matches!(self.reader.peek(), Some(' ') | Some('\t')) {
+            self.reader.advance();
+        }
     }
 
     /// The default tag handle map: primary `!` (local) and secondary `!!`
@@ -2767,5 +2838,67 @@ mod tests {
                 TokenKind::StreamEnd,
             ]
         );
+    }
+
+    #[test]
+    fn tag_directive_defines_named_handle() {
+        assert_eq!(
+            kinds("%TAG !e! tag:example.com,2000:\n--- !e!foo v\n"),
+            vec![
+                TokenKind::StreamStart,
+                TokenKind::DocumentStart,
+                TokenKind::Tag("tag:example.com,2000:foo".to_string()),
+                TokenKind::Scalar {
+                    value: "v".to_string(),
+                    style: ScalarStyle::Plain
+                },
+                TokenKind::StreamEnd,
+            ]
+        );
+    }
+
+    #[test]
+    fn yaml_directive_is_accepted_and_ignored() {
+        assert_eq!(
+            kinds("%YAML 1.2\n--- x\n"),
+            vec![
+                TokenKind::StreamStart,
+                TokenKind::DocumentStart,
+                TokenKind::Scalar {
+                    value: "x".to_string(),
+                    style: ScalarStyle::Plain
+                },
+                TokenKind::StreamEnd,
+            ]
+        );
+    }
+
+    #[test]
+    fn secondary_handle_can_be_overridden() {
+        assert_eq!(
+            kinds("%TAG !! tag:example.com,2000:\n--- !!foo v\n"),
+            vec![
+                TokenKind::StreamStart,
+                TokenKind::DocumentStart,
+                TokenKind::Tag("tag:example.com,2000:foo".to_string()),
+                TokenKind::Scalar {
+                    value: "v".to_string(),
+                    style: ScalarStyle::Plain
+                },
+                TokenKind::StreamEnd,
+            ]
+        );
+    }
+
+    #[test]
+    fn handles_reset_between_documents() {
+        // `!e!` is defined for the first document only; the second document must
+        // not see it, so its use is a scan error.
+        let err = tokenize(
+            "%TAG !e! tag:example.com,2000:\n--- !e!a\n--- !e!b\n",
+            Limits::default(),
+        )
+        .unwrap_err();
+        assert_eq!(err.kind(), crate::error::ErrorKind::Scan);
     }
 }
