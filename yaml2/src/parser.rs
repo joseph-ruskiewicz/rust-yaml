@@ -1212,7 +1212,7 @@ mod tests {
                 EventKind::DocumentStart,
                 EventKind::MappingStart {
                     anchor: None,
-                    tag: Some("!!map".to_string())
+                    tag: Some("tag:yaml.org,2002:map".to_string())
                 },
                 EventKind::Scalar {
                     value: "a".to_string(),
@@ -1272,7 +1272,7 @@ mod tests {
                 EventKind::DocumentStart,
                 EventKind::MappingStart {
                     anchor: Some("m".to_string()),
-                    tag: Some("!!map".to_string())
+                    tag: Some("tag:yaml.org,2002:map".to_string())
                 },
                 EventKind::Scalar {
                     value: "a".to_string(),

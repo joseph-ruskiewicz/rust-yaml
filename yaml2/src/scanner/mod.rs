@@ -7,7 +7,7 @@
 mod reader;
 mod token;
 
-use std::collections::VecDeque;
+use std::collections::{HashMap, VecDeque};
 
 use crate::error::{Error, ErrorKind, Position, Result, Span};
 use crate::meta::ScalarStyle;
@@ -45,6 +45,8 @@ pub(crate) struct Scanner<'a> {
     simple_key_allowed: bool,
     /// A buffered potential block mapping key, if any.
     simple_key: Option<SimpleKey>,
+    /// Tag handle -> prefix map for the current document (`%TAG` directives).
+    tag_handles: HashMap<String, String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -79,6 +81,7 @@ impl<'a> Scanner<'a> {
             indents: Vec::new(),
             simple_key_allowed: true,
             simple_key: None,
+            tag_handles: Self::default_tag_handles(),
         }
     }
 
@@ -235,7 +238,7 @@ impl<'a> Scanner<'a> {
             '"' => self.scan_double_quoted(start),
             '&' => self.scan_anchor_or_alias(start, true),
             '*' => self.scan_anchor_or_alias(start, false),
-            '!' => Ok(self.scan_tag(start)),
+            '!' => self.scan_tag(start),
             '-' if self.flow_depth == 0 && self.block_entry_next() => self.fetch_block_entry(start),
             '|' if self.flow_depth == 0 => self.scan_block_scalar(true, start),
             '>' if self.flow_depth == 0 => self.scan_block_scalar(false, start),
@@ -471,20 +474,100 @@ impl<'a> Scanner<'a> {
         Ok(Token::new(kind, Span::new(start, self.reader.position())))
     }
 
-    /// Scans a tag token, keeping the raw text including the leading `!`.
-    fn scan_tag(&mut self, start: Position) -> Token {
+    /// The default tag handle map: primary `!` (local) and secondary `!!`
+    /// (the YAML core tag namespace).
+    fn default_tag_handles() -> HashMap<String, String> {
+        let mut map = HashMap::new();
+        map.insert("!".to_string(), "!".to_string());
+        map.insert("!!".to_string(), "tag:yaml.org,2002:".to_string());
+        map
+    }
+
+    /// Scans and resolves a tag against the current handle map. Produces the
+    /// fully resolved tag: a verbatim URI, a core/custom URI from a handle, a
+    /// local `!suffix`, or the non-specific `!`.
+    fn scan_tag(&mut self, start: Position) -> Result<Token> {
         self.reader.advance(); // leading '!'
-        let mut text = String::from("!");
-        // A second '!' is part of the handle (e.g. `!!str`).
-        if self.reader.peek() == Some('!') {
-            self.reader.advance();
-            text.push('!');
+
+        // Verbatim tag: !<uri>
+        if self.reader.peek() == Some('<') {
+            self.reader.advance(); // '<'
+            let mut uri = String::new();
+            loop {
+                match self.reader.peek() {
+                    Some('>') => {
+                        self.reader.advance();
+                        break;
+                    }
+                    Some(c) if !c.is_whitespace() => {
+                        self.reader.advance();
+                        uri.push(c);
+                    }
+                    _ => {
+                        return Err(Error::new(ErrorKind::Scan, "unterminated verbatim tag")
+                            .with_span(Span::new(start, self.reader.position())))
+                    }
+                }
+            }
+            if uri.is_empty() {
+                return Err(Error::new(ErrorKind::Scan, "empty verbatim tag")
+                    .with_span(Span::new(start, self.reader.position())));
+            }
+            return Ok(Token::new(
+                TokenKind::Tag(uri),
+                Span::new(start, self.reader.position()),
+            ));
         }
-        text.push_str(&self.take_name());
-        Token::new(
-            TokenKind::Tag(text),
+
+        // Shorthand. The first segment is empty for `!!` and for the bare `!`.
+        let first = self.take_tag_word();
+        let resolved = if self.reader.peek() == Some('!') {
+            // Named or secondary handle: `!<first>!<suffix>`.
+            self.reader.advance(); // second '!'
+            let handle = format!("!{first}!");
+            let suffix = self.take_tag_word();
+            match self.tag_handles.get(&handle) {
+                Some(prefix) => format!("{prefix}{suffix}"),
+                None => {
+                    return Err(Error::new(
+                        ErrorKind::Scan,
+                        format!("undefined tag handle '{handle}'"),
+                    )
+                    .with_span(Span::new(start, self.reader.position())))
+                }
+            }
+        } else {
+            // Primary handle `!` with suffix `first` (empty => non-specific `!`).
+            let prefix = self
+                .tag_handles
+                .get("!")
+                .cloned()
+                .unwrap_or_else(|| "!".to_string());
+            format!("{prefix}{first}")
+        };
+
+        Ok(Token::new(
+            TokenKind::Tag(resolved),
             Span::new(start, self.reader.position()),
-        )
+        ))
+    }
+
+    /// Consumes a run of tag-shorthand characters: non-whitespace, non-flow-
+    /// indicator, stopping at `!` (a handle boundary) and at a `:` value
+    /// indicator.
+    fn take_tag_word(&mut self) -> String {
+        let mut word = String::new();
+        while let Some(c) = self.reader.peek() {
+            if c.is_whitespace() || matches!(c, ',' | '[' | ']' | '{' | '}' | '!') {
+                break;
+            }
+            if c == ':' && self.indicator_terminator_next() {
+                break;
+            }
+            self.reader.advance();
+            word.push(c);
+        }
+        word
     }
 
     /// Consumes a run of name characters (non-whitespace, non-flow-indicator).
@@ -1436,10 +1519,48 @@ mod tests {
             kinds("!!str"),
             vec![
                 TokenKind::StreamStart,
-                TokenKind::Tag("!!str".to_string()),
+                TokenKind::Tag("tag:yaml.org,2002:str".to_string()),
                 TokenKind::StreamEnd,
             ]
         );
+    }
+
+    #[test]
+    fn verbatim_tag_uses_uri_as_is() {
+        assert_eq!(
+            kinds("!<tag:example.com,2000:x> v"),
+            vec![
+                TokenKind::StreamStart,
+                TokenKind::Tag("tag:example.com,2000:x".to_string()),
+                TokenKind::Scalar {
+                    value: "v".to_string(),
+                    style: ScalarStyle::Plain
+                },
+                TokenKind::StreamEnd,
+            ]
+        );
+    }
+
+    #[test]
+    fn non_specific_tag_resolves_to_bang() {
+        assert_eq!(
+            kinds("! v"),
+            vec![
+                TokenKind::StreamStart,
+                TokenKind::Tag("!".to_string()),
+                TokenKind::Scalar {
+                    value: "v".to_string(),
+                    style: ScalarStyle::Plain
+                },
+                TokenKind::StreamEnd,
+            ]
+        );
+    }
+
+    #[test]
+    fn undefined_named_handle_is_scan_error() {
+        let err = tokenize("!e!foo v", Limits::default()).unwrap_err();
+        assert_eq!(err.kind(), crate::error::ErrorKind::Scan);
     }
 
     #[test]
