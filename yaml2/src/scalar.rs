@@ -176,7 +176,8 @@ fn classify_json_number(raw: &str) -> JsonNumber {
 // YAML 1.1 scalar resolution. Covers the user-facing differences from Core 1.2:
 // the "Norway problem" booleans (yes/no/on/off/y/n) and leading-zero octal.
 // Deferred to a later hardening pass: binary (0b...), sexagesimal (1:2:3),
-// and underscore digit separators.
+// underscore digit separators, and `.inf`/`.nan` float specials (currently
+// resolved as strings under the 1.1 schema).
 fn resolve_yaml11(raw: &str) -> ValueData {
     match raw {
         "" | "~" | "null" | "Null" | "NULL" => return ValueData::Null,

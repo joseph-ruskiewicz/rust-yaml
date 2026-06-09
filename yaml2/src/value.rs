@@ -247,11 +247,11 @@ impl Mapping {
         self.entries.is_empty()
     }
 
-    pub fn iter(&self) -> indexmap::map::Iter<'_, Value, Value> {
+    pub fn iter(&self) -> impl Iterator<Item = (&Value, &Value)> {
         self.entries.iter()
     }
 
-    pub fn iter_mut(&mut self) -> indexmap::map::IterMut<'_, Value, Value> {
+    pub fn iter_mut(&mut self) -> impl Iterator<Item = (&Value, &mut Value)> {
         self.entries.iter_mut()
     }
 }
