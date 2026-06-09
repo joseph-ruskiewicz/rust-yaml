@@ -87,8 +87,93 @@ fn parse_core_float(raw: &str) -> Option<f64> {
 }
 
 fn resolve_json(raw: &str) -> ValueData {
-    // Implemented in Task 11.
-    ValueData::String(raw.to_string())
+    match raw {
+        "null" => return ValueData::Null,
+        "true" => return ValueData::Bool(true),
+        "false" => return ValueData::Bool(false),
+        _ => {}
+    }
+    match classify_json_number(raw) {
+        JsonNumber::Int => match raw.parse::<i64>() {
+            Ok(i) => ValueData::Int(i),
+            Err(_) => ValueData::String(raw.to_string()),
+        },
+        JsonNumber::Float => match raw.parse::<f64>() {
+            Ok(f) => ValueData::Float(f),
+            Err(_) => ValueData::String(raw.to_string()),
+        },
+        JsonNumber::No => ValueData::String(raw.to_string()),
+    }
+}
+
+enum JsonNumber {
+    Int,
+    Float,
+    No,
+}
+
+/// Classifies `raw` against the JSON number grammar:
+/// `-? (0 | [1-9][0-9]*) (. [0-9]+)? ([eE] [+-]? [0-9]+)?`
+fn classify_json_number(raw: &str) -> JsonNumber {
+    let bytes = raw.as_bytes();
+    let mut i = 0;
+
+    if i < bytes.len() && bytes[i] == b'-' {
+        i += 1;
+    }
+
+    // Integer part.
+    let int_start = i;
+    if i < bytes.len() && bytes[i] == b'0' {
+        i += 1;
+    } else {
+        while i < bytes.len() && bytes[i].is_ascii_digit() {
+            i += 1;
+        }
+    }
+    if i == int_start {
+        return JsonNumber::No; // no integer digits
+    }
+
+    let mut is_float = false;
+
+    // Fraction.
+    if i < bytes.len() && bytes[i] == b'.' {
+        is_float = true;
+        i += 1;
+        let frac_start = i;
+        while i < bytes.len() && bytes[i].is_ascii_digit() {
+            i += 1;
+        }
+        if i == frac_start {
+            return JsonNumber::No; // '.' with no digits
+        }
+    }
+
+    // Exponent.
+    if i < bytes.len() && (bytes[i] == b'e' || bytes[i] == b'E') {
+        is_float = true;
+        i += 1;
+        if i < bytes.len() && (bytes[i] == b'+' || bytes[i] == b'-') {
+            i += 1;
+        }
+        let exp_start = i;
+        while i < bytes.len() && bytes[i].is_ascii_digit() {
+            i += 1;
+        }
+        if i == exp_start {
+            return JsonNumber::No; // exponent with no digits
+        }
+    }
+
+    if i != bytes.len() {
+        return JsonNumber::No; // trailing junk
+    }
+    if is_float {
+        JsonNumber::Float
+    } else {
+        JsonNumber::Int
+    }
 }
 
 // YAML 1.1 scalar resolution. Covers the user-facing differences from Core 1.2:
@@ -262,5 +347,40 @@ mod tests {
         assert!(matches!(y11("~"), ValueData::Null));
         assert!(matches!(y11("null"), ValueData::Null));
         assert!(matches!(y11(""), ValueData::Null));
+    }
+
+    fn json(raw: &str) -> ValueData {
+        resolve(raw, ScalarStyle::Plain, Schema::Json1_2)
+    }
+
+    #[test]
+    fn json_strict_keywords() {
+        assert!(matches!(json("null"), ValueData::Null));
+        assert!(matches!(json("true"), ValueData::Bool(true)));
+        assert!(matches!(json("false"), ValueData::Bool(false)));
+        assert!(matches!(json("Null"), ValueData::String(s) if s == "Null"));
+        assert!(matches!(json("True"), ValueData::String(s) if s == "True"));
+    }
+
+    #[test]
+    fn json_numbers() {
+        assert!(matches!(json("0"), ValueData::Int(0)));
+        assert!(matches!(json("-12"), ValueData::Int(-12)));
+        assert!(matches!(json("1.5"), ValueData::Float(f) if f == 1.5));
+        assert!(matches!(json("1e3"), ValueData::Float(f) if f == 1000.0));
+        assert!(matches!(json("01"), ValueData::String(s) if s == "01"));
+        assert!(matches!(json("0x1F"), ValueData::String(s) if s == "0x1F"));
+    }
+
+    #[test]
+    fn failsafe_everything_is_string() {
+        assert!(matches!(
+            resolve("true", ScalarStyle::Plain, Schema::Failsafe),
+            ValueData::String(s) if s == "true"
+        ));
+        assert!(matches!(
+            resolve("42", ScalarStyle::Plain, Schema::Failsafe),
+            ValueData::String(s) if s == "42"
+        ));
     }
 }
