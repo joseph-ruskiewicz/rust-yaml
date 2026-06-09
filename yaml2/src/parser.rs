@@ -231,6 +231,7 @@ impl ParserState {
             Some(TokenKind::BlockMappingStart) => self.parse_block_mapping(anchor, tag),
             Some(TokenKind::BlockEntry) => self.parse_indentless_sequence(anchor, tag),
             Some(TokenKind::FlowSequenceStart) => self.parse_flow_sequence(anchor, tag),
+            Some(TokenKind::FlowMappingStart) => self.parse_flow_mapping(anchor, tag),
             _ => {
                 // Implicit empty (null) node — carries any collected properties.
                 self.emit(
@@ -438,6 +439,71 @@ impl ParserState {
                 | Some(TokenKind::FlowSequenceEnd)
                 | Some(TokenKind::FlowMappingEnd)
         )
+    }
+
+    /// True when the current token terminates a flow key (a `:` value indicator
+    /// or any flow-value terminator).
+    fn at_flow_key_end(&self) -> bool {
+        matches!(self.peek(), Some(TokenKind::Value)) || self.at_flow_value_end()
+    }
+
+    /// Parses a flow mapping `{ ... }`. Entries are comma-separated key/value
+    /// pairs; keys may be explicit (`? k`) or implicit, and either side may be
+    /// empty (`{a}`, `{:b}`, `{a:}`).
+    fn parse_flow_mapping(&mut self, anchor: Option<String>, tag: Option<String>) -> Result<()> {
+        let start = self.bump(); // FlowMappingStart
+        self.emit(EventKind::MappingStart { anchor, tag }, start.span);
+        loop {
+            if matches!(self.peek(), Some(TokenKind::FlowMappingEnd)) {
+                let end = self.bump();
+                self.emit(EventKind::MappingEnd, end.span);
+                return Ok(());
+            }
+            self.parse_flow_mapping_entry()?;
+            match self.peek() {
+                Some(TokenKind::FlowEntry) => {
+                    self.bump();
+                }
+                Some(TokenKind::FlowMappingEnd) => {
+                    let end = self.bump();
+                    self.emit(EventKind::MappingEnd, end.span);
+                    return Ok(());
+                }
+                _ => return Err(self.error("expected ',' or '}' in flow mapping")),
+            }
+        }
+    }
+
+    /// Parses one flow mapping key/value pair, emitting a key node followed by a
+    /// value node (either may be an implicit empty scalar).
+    fn parse_flow_mapping_entry(&mut self) -> Result<()> {
+        // Key.
+        match self.peek() {
+            Some(TokenKind::Key) => {
+                self.bump(); // `?`
+                if self.at_flow_key_end() {
+                    self.emit_empty_scalar();
+                } else {
+                    self.parse_node()?;
+                }
+            }
+            Some(TokenKind::Value) => {
+                self.emit_empty_scalar(); // empty key; `:` consumed below
+            }
+            _ => self.parse_node()?,
+        }
+        // Value.
+        if matches!(self.peek(), Some(TokenKind::Value)) {
+            self.bump();
+            if self.at_flow_value_end() {
+                self.emit_empty_scalar();
+            } else {
+                self.parse_node()?;
+            }
+        } else {
+            self.emit_empty_scalar();
+        }
+        Ok(())
     }
 }
 
@@ -916,6 +982,197 @@ mod tests {
                     tag: None
                 },
                 EventKind::SequenceEnd,
+                EventKind::DocumentEnd,
+                EventKind::StreamEnd,
+            ]
+        );
+    }
+
+    #[test]
+    fn flow_mapping() {
+        assert_eq!(
+            kinds("{a: b, c: d}"),
+            vec![
+                EventKind::StreamStart,
+                EventKind::DocumentStart,
+                EventKind::MappingStart {
+                    anchor: None,
+                    tag: None
+                },
+                EventKind::Scalar {
+                    value: "a".to_string(),
+                    style: ScalarStyle::Plain,
+                    anchor: None,
+                    tag: None
+                },
+                EventKind::Scalar {
+                    value: "b".to_string(),
+                    style: ScalarStyle::Plain,
+                    anchor: None,
+                    tag: None
+                },
+                EventKind::Scalar {
+                    value: "c".to_string(),
+                    style: ScalarStyle::Plain,
+                    anchor: None,
+                    tag: None
+                },
+                EventKind::Scalar {
+                    value: "d".to_string(),
+                    style: ScalarStyle::Plain,
+                    anchor: None,
+                    tag: None
+                },
+                EventKind::MappingEnd,
+                EventKind::DocumentEnd,
+                EventKind::StreamEnd,
+            ]
+        );
+    }
+
+    #[test]
+    fn empty_flow_mapping() {
+        assert_eq!(
+            kinds("{}"),
+            vec![
+                EventKind::StreamStart,
+                EventKind::DocumentStart,
+                EventKind::MappingStart {
+                    anchor: None,
+                    tag: None
+                },
+                EventKind::MappingEnd,
+                EventKind::DocumentEnd,
+                EventKind::StreamEnd,
+            ]
+        );
+    }
+
+    #[test]
+    fn flow_mapping_key_only_has_empty_value() {
+        assert_eq!(
+            kinds("{a}"),
+            vec![
+                EventKind::StreamStart,
+                EventKind::DocumentStart,
+                EventKind::MappingStart {
+                    anchor: None,
+                    tag: None
+                },
+                EventKind::Scalar {
+                    value: "a".to_string(),
+                    style: ScalarStyle::Plain,
+                    anchor: None,
+                    tag: None
+                },
+                EventKind::Scalar {
+                    value: String::new(),
+                    style: ScalarStyle::Plain,
+                    anchor: None,
+                    tag: None
+                },
+                EventKind::MappingEnd,
+                EventKind::DocumentEnd,
+                EventKind::StreamEnd,
+            ]
+        );
+    }
+
+    #[test]
+    fn flow_mapping_empty_key() {
+        assert_eq!(
+            kinds("{: b}"),
+            vec![
+                EventKind::StreamStart,
+                EventKind::DocumentStart,
+                EventKind::MappingStart {
+                    anchor: None,
+                    tag: None
+                },
+                EventKind::Scalar {
+                    value: String::new(),
+                    style: ScalarStyle::Plain,
+                    anchor: None,
+                    tag: None
+                },
+                EventKind::Scalar {
+                    value: "b".to_string(),
+                    style: ScalarStyle::Plain,
+                    anchor: None,
+                    tag: None
+                },
+                EventKind::MappingEnd,
+                EventKind::DocumentEnd,
+                EventKind::StreamEnd,
+            ]
+        );
+    }
+
+    #[test]
+    fn flow_mapping_explicit_key() {
+        assert_eq!(
+            kinds("{? a : b}"),
+            vec![
+                EventKind::StreamStart,
+                EventKind::DocumentStart,
+                EventKind::MappingStart {
+                    anchor: None,
+                    tag: None
+                },
+                EventKind::Scalar {
+                    value: "a".to_string(),
+                    style: ScalarStyle::Plain,
+                    anchor: None,
+                    tag: None
+                },
+                EventKind::Scalar {
+                    value: "b".to_string(),
+                    style: ScalarStyle::Plain,
+                    anchor: None,
+                    tag: None
+                },
+                EventKind::MappingEnd,
+                EventKind::DocumentEnd,
+                EventKind::StreamEnd,
+            ]
+        );
+    }
+
+    #[test]
+    fn nested_flow_collections() {
+        assert_eq!(
+            kinds("{k: [1, 2]}"),
+            vec![
+                EventKind::StreamStart,
+                EventKind::DocumentStart,
+                EventKind::MappingStart {
+                    anchor: None,
+                    tag: None
+                },
+                EventKind::Scalar {
+                    value: "k".to_string(),
+                    style: ScalarStyle::Plain,
+                    anchor: None,
+                    tag: None
+                },
+                EventKind::SequenceStart {
+                    anchor: None,
+                    tag: None
+                },
+                EventKind::Scalar {
+                    value: "1".to_string(),
+                    style: ScalarStyle::Plain,
+                    anchor: None,
+                    tag: None
+                },
+                EventKind::Scalar {
+                    value: "2".to_string(),
+                    style: ScalarStyle::Plain,
+                    anchor: None,
+                    tag: None
+                },
+                EventKind::SequenceEnd,
+                EventKind::MappingEnd,
                 EventKind::DocumentEnd,
                 EventKind::StreamEnd,
             ]
