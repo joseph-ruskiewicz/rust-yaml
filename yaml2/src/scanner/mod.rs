@@ -483,16 +483,18 @@ impl<'a> Scanner<'a> {
         loop {
             match self.reader.peek() {
                 None => {
-                    return Err(Error::new(
-                        ErrorKind::Scan,
-                        "unterminated double-quoted scalar",
-                    )
-                    .with_span(Span::new(start, self.reader.position())));
+                    return Err(
+                        Error::new(ErrorKind::Scan, "unterminated double-quoted scalar")
+                            .with_span(Span::new(start, self.reader.position())),
+                    );
                 }
                 Some('"') => {
                     self.reader.advance();
                     return Ok(Token::new(
-                        TokenKind::Scalar { value, style: ScalarStyle::DoubleQuoted },
+                        TokenKind::Scalar {
+                            value,
+                            style: ScalarStyle::DoubleQuoted,
+                        },
                         Span::new(start, self.reader.position()),
                     ));
                 }
@@ -2325,6 +2327,103 @@ mod tests {
         assert_eq!(
             one_scalar("'it''s\nok'"),
             ("it's ok".to_string(), ScalarStyle::SingleQuoted)
+        );
+    }
+
+    #[test]
+    fn block_scalars_in_a_mapping() {
+        let input = "literal: |\n  a\n  b\nfolded: >\n  c\n  d\n";
+        assert_eq!(
+            kinds(input),
+            vec![
+                TokenKind::StreamStart,
+                TokenKind::BlockMappingStart,
+                TokenKind::Key,
+                TokenKind::Scalar {
+                    value: "literal".to_string(),
+                    style: ScalarStyle::Plain
+                },
+                TokenKind::Value,
+                TokenKind::Scalar {
+                    value: "a\nb\n".to_string(),
+                    style: ScalarStyle::Literal
+                },
+                TokenKind::Key,
+                TokenKind::Scalar {
+                    value: "folded".to_string(),
+                    style: ScalarStyle::Plain
+                },
+                TokenKind::Value,
+                TokenKind::Scalar {
+                    value: "c d\n".to_string(),
+                    style: ScalarStyle::Folded
+                },
+                TokenKind::BlockEnd,
+                TokenKind::StreamEnd,
+            ]
+        );
+    }
+
+    #[test]
+    fn multiline_quoted_value_in_mapping() {
+        assert_eq!(
+            kinds("msg: \"hello\n  world\"\n"),
+            vec![
+                TokenKind::StreamStart,
+                TokenKind::BlockMappingStart,
+                TokenKind::Key,
+                TokenKind::Scalar {
+                    value: "msg".to_string(),
+                    style: ScalarStyle::Plain
+                },
+                TokenKind::Value,
+                TokenKind::Scalar {
+                    value: "hello world".to_string(),
+                    style: ScalarStyle::DoubleQuoted
+                },
+                TokenKind::BlockEnd,
+                TokenKind::StreamEnd,
+            ]
+        );
+    }
+
+    #[test]
+    fn flow_and_block_scalars_unaffected() {
+        assert_eq!(
+            kinds(r#"{"a":"b"}"#),
+            vec![
+                TokenKind::StreamStart,
+                TokenKind::FlowMappingStart,
+                TokenKind::Scalar {
+                    value: "a".to_string(),
+                    style: ScalarStyle::DoubleQuoted
+                },
+                TokenKind::Value,
+                TokenKind::Scalar {
+                    value: "b".to_string(),
+                    style: ScalarStyle::DoubleQuoted
+                },
+                TokenKind::FlowMappingEnd,
+                TokenKind::StreamEnd,
+            ]
+        );
+    }
+
+    #[test]
+    fn literal_block_scalar_no_trailing_newline_at_eof() {
+        // last line has no trailing newline; clip still yields one.
+        assert_eq!(
+            one_scalar("|\n  a"),
+            ("a\n".to_string(), ScalarStyle::Literal)
+        );
+    }
+
+    #[test]
+    fn literal_block_scalar_crlf_lines() {
+        // CRLF line endings must not leave stray '\r' in the value.
+        assert_eq!(
+            one_scalar("|\r\n  a\r\n  b\r\n"),
+            ("a\nb\n".to_string(), ScalarStyle::Literal)
         );
     }
 }
