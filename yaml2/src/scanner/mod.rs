@@ -477,25 +477,38 @@ impl<'a> Scanner<'a> {
         loop {
             match self.reader.peek() {
                 None => {
-                    return Err(
-                        Error::new(ErrorKind::Scan, "unterminated double-quoted scalar")
-                            .with_span(Span::new(start, self.reader.position())),
-                    );
+                    return Err(Error::new(
+                        ErrorKind::Scan,
+                        "unterminated double-quoted scalar",
+                    )
+                    .with_span(Span::new(start, self.reader.position())));
                 }
                 Some('"') => {
                     self.reader.advance();
                     return Ok(Token::new(
-                        TokenKind::Scalar {
-                            value,
-                            style: ScalarStyle::DoubleQuoted,
-                        },
+                        TokenKind::Scalar { value, style: ScalarStyle::DoubleQuoted },
                         Span::new(start, self.reader.position()),
                     ));
                 }
                 Some('\\') => {
-                    self.reader.advance(); // consume backslash
-                    let ch = self.scan_escape(start)?;
-                    value.push(ch);
+                    // Escaped line break = line continuation (no inserted space).
+                    if matches!(self.reader.peek_nth(1), Some('\n') | Some('\r')) {
+                        self.reader.advance(); // backslash
+                        self.consume_line_break();
+                        while matches!(self.reader.peek(), Some(' ') | Some('\t')) {
+                            self.reader.advance();
+                        }
+                    } else {
+                        self.reader.advance(); // backslash
+                        let ch = self.scan_escape(start)?;
+                        value.push(ch);
+                    }
+                }
+                Some('\n') | Some('\r') => {
+                    let trimmed = value.trim_end_matches([' ', '\t']).len();
+                    value.truncate(trimmed);
+                    let folded = self.scan_flow_folded_breaks();
+                    value.push_str(&folded);
                 }
                 Some(c) => {
                     self.reader.advance();
@@ -565,6 +578,32 @@ impl<'a> Scanner<'a> {
             )
             .with_span(Span::new(start, self.reader.position()))
         })
+    }
+
+    /// At a line break inside a flow (quoted) scalar, consumes the break, any
+    /// following blank lines, and the leading whitespace of the continuation.
+    /// Returns the folded text: a single break → one space; N blank lines → N
+    /// newlines. The caller must trim trailing whitespace before the break.
+    fn scan_flow_folded_breaks(&mut self) -> String {
+        self.consume_line_break();
+        let mut breaks = 0usize;
+        loop {
+            while matches!(self.reader.peek(), Some(' ') | Some('\t')) {
+                self.reader.advance();
+            }
+            match self.reader.peek() {
+                Some('\n') | Some('\r') => {
+                    self.consume_line_break();
+                    breaks += 1;
+                }
+                _ => break,
+            }
+        }
+        if breaks == 0 {
+            " ".to_string()
+        } else {
+            "\n".repeat(breaks)
+        }
     }
 
     /// True if the input begins with `marker` followed by whitespace, a line
@@ -2216,6 +2255,38 @@ mod tests {
         assert_eq!(
             one_scalar(">+\n  a\n\n\n"),
             ("a\n\n\n".to_string(), ScalarStyle::Folded)
+        );
+    }
+
+    #[test]
+    fn double_quoted_multiline_folds_to_space() {
+        assert_eq!(
+            one_scalar("\"a\nb\""),
+            ("a b".to_string(), ScalarStyle::DoubleQuoted)
+        );
+    }
+
+    #[test]
+    fn double_quoted_multiline_trims_surrounding_whitespace() {
+        assert_eq!(
+            one_scalar("\"a   \n   b\""),
+            ("a b".to_string(), ScalarStyle::DoubleQuoted)
+        );
+    }
+
+    #[test]
+    fn double_quoted_blank_line_becomes_newline() {
+        assert_eq!(
+            one_scalar("\"a\n\nb\""),
+            ("a\nb".to_string(), ScalarStyle::DoubleQuoted)
+        );
+    }
+
+    #[test]
+    fn double_quoted_escaped_line_continuation() {
+        assert_eq!(
+            one_scalar("\"a\\\n   b\""),
+            ("ab".to_string(), ScalarStyle::DoubleQuoted)
         );
     }
 }
