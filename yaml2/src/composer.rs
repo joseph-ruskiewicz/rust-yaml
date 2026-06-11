@@ -4,7 +4,7 @@ use std::collections::HashMap;
 
 use crate::error::{Error, ErrorKind, Result, Span};
 use crate::event::{Event, EventKind};
-use crate::meta::ScalarStyle;
+use crate::meta::{Meta, ScalarStyle};
 use crate::options::{ParseOptions, Schema};
 use crate::value::{Mapping, Value, ValueData};
 
@@ -110,7 +110,17 @@ impl Composer<'_> {
                 anchor,
                 tag,
             } => {
-                let composed = self.resolve_scalar(&value, style, tag.as_deref(), event.span)?;
+                let mut composed =
+                    self.resolve_scalar(&value, style, tag.as_deref(), event.span)?;
+                if self.options.preserve_formatting {
+                    composed = composed.with_meta(Meta {
+                        style,
+                        span: Some(event.span),
+                        anchor: anchor.clone(),
+                        tag: tag.clone(),
+                        ..Meta::default()
+                    });
+                }
                 if let Some(name) = anchor {
                     self.anchors.insert(name, composed.clone());
                 }
@@ -820,5 +830,46 @@ job:
         let m = v.as_mapping().unwrap();
         let child = m.get(&key("root")).unwrap().as_mapping().unwrap();
         assert_eq!(child.get(&key("child")).unwrap().as_str(), Some("v"));
+    }
+
+    fn parse_preserving(input: &str) -> Value {
+        crate::api::parse_with(input, &ParseOptions::preserve_formatting()).unwrap()
+    }
+
+    #[test]
+    fn preserve_records_scalar_style() {
+        let v = parse_preserving("a: 'one'\nb: \"two\"\nc: three\n");
+        let m = v.as_mapping().unwrap();
+        assert_eq!(
+            m.get(&key("a")).unwrap().meta().unwrap().style,
+            ScalarStyle::SingleQuoted
+        );
+        assert_eq!(
+            m.get(&key("b")).unwrap().meta().unwrap().style,
+            ScalarStyle::DoubleQuoted
+        );
+        assert_eq!(
+            m.get(&key("c")).unwrap().meta().unwrap().style,
+            ScalarStyle::Plain
+        );
+    }
+
+    #[test]
+    fn preserve_records_span() {
+        let v = parse_preserving("hello\n");
+        assert!(v.meta().unwrap().span.is_some());
+    }
+
+    #[test]
+    fn default_parse_attaches_no_meta() {
+        // Without preserve_formatting, scalars carry no metadata.
+        let v = parse("hello\n");
+        assert!(v.meta().is_none());
+    }
+
+    #[test]
+    fn preserve_does_not_change_value_equality() {
+        // Meta is ignored by equality, so the composed values match.
+        assert_eq!(parse_preserving("x: 1\n"), parse("x: 1\n"));
     }
 }
