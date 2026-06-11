@@ -472,4 +472,33 @@ tags: [x, y, z]
         let v = crate::api::parse_with("a: 'hello'\n", &opts).unwrap();
         assert_eq!(crate::api::to_string(&v).unwrap(), "a: hello\n");
     }
+
+    #[test]
+    fn round_trip_mixed_styles_document() {
+        let input = "name: 'Ada'\nrole: \"engineer\"\nactive: true\ncount: 3\n";
+        assert_eq!(to_string_round_trip(input), input);
+    }
+
+    #[test]
+    fn round_trip_quoted_inside_sequence() {
+        let input = "- 'a'\n- \"b\"\n- c\n";
+        assert_eq!(to_string_round_trip(input), input);
+    }
+
+    #[test]
+    fn round_trip_preserves_quoted_keys() {
+        let input = "'a key': 1\n";
+        assert_eq!(to_string_round_trip(input), input);
+    }
+
+    #[test]
+    fn round_trip_value_is_stable_even_for_block_scalars() {
+        // Block scalars are not re-emitted as `|` yet (deferred), but the VALUE
+        // must still round-trip: parse(emit(parse(x))) == parse(x).
+        let opts = crate::options::ParseOptions::preserve_formatting();
+        let v1 = crate::api::parse_with("text: |\n  a\n  b\n", &opts).unwrap();
+        let emitted = crate::api::to_string_with(&v1, &EmitOptions::round_trip()).unwrap();
+        let v2 = crate::api::parse_with(&emitted, &opts).unwrap();
+        assert_eq!(v1, v2);
+    }
 }
