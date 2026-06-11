@@ -40,7 +40,7 @@ fn emit_block_value(value: &Value, level: usize, options: &EmitOptions, out: &mu
         ValueData::Mapping(map) if !map.is_empty() => emit_block_mapping(map, level, options, out),
         _ => {
             out.push_str(&pad(level, options));
-            out.push_str(&scalar_or_flow(value));
+            out.push_str(&scalar_or_flow(value, options));
             out.push('\n');
         }
     }
@@ -65,7 +65,7 @@ fn emit_block_sequence(items: &[Value], level: usize, options: &EmitOptions, out
             emit_block_value(item, level + 1, options, out);
         } else {
             out.push(' ');
-            out.push_str(&scalar_or_flow(item));
+            out.push_str(&scalar_or_flow(item, options));
             out.push('\n');
         }
     }
@@ -79,14 +79,14 @@ fn emit_block_mapping(
 ) {
     for (k, v) in map.iter() {
         out.push_str(&pad(level, options));
-        out.push_str(&scalar_or_flow(k));
+        out.push_str(&scalar_or_flow(k, options));
         out.push(':');
         if is_block_collection(v) {
             out.push('\n');
             emit_block_value(v, level + 1, options, out);
         } else {
             out.push(' ');
-            out.push_str(&scalar_or_flow(v));
+            out.push_str(&scalar_or_flow(v, options));
             out.push('\n');
         }
     }
@@ -94,51 +94,69 @@ fn emit_block_mapping(
 
 /// Renders a value to a single-line string: scalars via `emit_scalar`,
 /// collections via `emit_flow`.
-fn scalar_or_flow(value: &Value) -> String {
+fn scalar_or_flow(value: &Value, options: &EmitOptions) -> String {
     match value.data() {
-        ValueData::Sequence(_) | ValueData::Mapping(_) => emit_flow(value),
-        _ => emit_scalar(value),
+        ValueData::Sequence(_) | ValueData::Mapping(_) => emit_flow(value, options),
+        _ => emit_scalar(value, options),
     }
 }
 
 /// Renders any value to single-line flow form (recursive). Used for empty and
 /// inline collections and for non-scalar mapping keys.
-fn emit_flow(value: &Value) -> String {
+fn emit_flow(value: &Value, options: &EmitOptions) -> String {
     match value.data() {
         ValueData::Sequence(items) => {
-            let inner: Vec<String> = items.iter().map(emit_flow).collect();
+            let inner: Vec<String> = items.iter().map(|it| emit_flow(it, options)).collect();
             format!("[{}]", inner.join(", "))
         }
         ValueData::Mapping(map) => {
             let inner: Vec<String> = map
                 .iter()
-                .map(|(k, v)| format!("{}: {}", emit_flow(k), emit_flow(v)))
+                .map(|(k, v)| format!("{}: {}", emit_flow(k, options), emit_flow(v, options)))
                 .collect();
             format!("{{{}}}", inner.join(", "))
         }
-        _ => emit_scalar(value),
+        _ => emit_scalar(value, options),
     }
 }
 
 /// Renders a scalar value: plain when it re-parses to itself, otherwise
 /// double-quoted with escapes. Collection inputs are routed through `emit_flow`
 /// by callers, but are handled here defensively too.
-fn emit_scalar(value: &Value) -> String {
+fn emit_scalar(value: &Value, options: &EmitOptions) -> String {
     match value.data() {
         ValueData::Null => "null".to_string(),
         ValueData::Bool(true) => "true".to_string(),
         ValueData::Bool(false) => "false".to_string(),
         ValueData::Int(i) => i.to_string(),
         ValueData::Float(f) => format_float(*f),
-        ValueData::String(s) => {
-            if needs_quoting(s) {
-                double_quote(s)
-            } else {
-                s.clone()
+        ValueData::String(s) => emit_string(s, value, options),
+        ValueData::Sequence(_) | ValueData::Mapping(_) => emit_flow(value, options),
+    }
+}
+
+/// Renders a string scalar. Under `round_trip`, honors a recorded quote style;
+/// otherwise (and for plain/block styles) uses the default safe-plain logic.
+fn emit_string(s: &str, value: &Value, options: &EmitOptions) -> String {
+    if options.round_trip {
+        if let Some(meta) = value.meta() {
+            match meta.style {
+                ScalarStyle::SingleQuoted if !s.contains('\n') => return single_quote(s),
+                ScalarStyle::DoubleQuoted => return double_quote(s),
+                _ => {}
             }
         }
-        ValueData::Sequence(_) | ValueData::Mapping(_) => emit_flow(value),
     }
+    if needs_quoting(s) {
+        double_quote(s)
+    } else {
+        s.to_string()
+    }
+}
+
+/// Single-quotes a string, doubling any embedded single quote.
+fn single_quote(s: &str) -> String {
+    format!("'{}'", s.replace('\'', "''"))
 }
 
 /// Formats a float so it always re-parses as a float (never an int).
@@ -418,5 +436,40 @@ tags: [x, y, z]
         // The folded value re-emits (as a single line) and re-parses to the same value.
         roundtrip("summary: line one\n  line two\n");
         roundtrip("text: para one\n\n  para two\n");
+    }
+
+    fn to_string_round_trip(input: &str) -> String {
+        let opts = crate::options::ParseOptions::preserve_formatting();
+        let v = crate::api::parse_with(input, &opts).unwrap();
+        crate::api::to_string_with(&v, &EmitOptions::round_trip()).unwrap()
+    }
+
+    #[test]
+    fn round_trip_preserves_single_quotes() {
+        assert_eq!(to_string_round_trip("a: 'hello'\n"), "a: 'hello'\n");
+    }
+
+    #[test]
+    fn round_trip_preserves_double_quotes() {
+        assert_eq!(to_string_round_trip("a: \"hello\"\n"), "a: \"hello\"\n");
+    }
+
+    #[test]
+    fn round_trip_single_quote_doubles_inner_quote() {
+        assert_eq!(to_string_round_trip("a: 'it''s'\n"), "a: 'it''s'\n");
+    }
+
+    #[test]
+    fn round_trip_leaves_plain_plain() {
+        assert_eq!(to_string_round_trip("a: hello\n"), "a: hello\n");
+    }
+
+    #[test]
+    fn non_round_trip_ignores_style_meta() {
+        // Default emit (round_trip off) drops the quotes for a safe plain string,
+        // even when the value carries SingleQuoted metadata.
+        let opts = crate::options::ParseOptions::preserve_formatting();
+        let v = crate::api::parse_with("a: 'hello'\n", &opts).unwrap();
+        assert_eq!(crate::api::to_string(&v).unwrap(), "a: hello\n");
     }
 }
