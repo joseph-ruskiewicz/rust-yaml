@@ -367,6 +367,9 @@ impl<'a> Scanner<'a> {
                     Ok(self.single_char(TokenKind::Value, start))
                 }
             }
+            '?' if self.flow_depth == 0 && self.indicator_terminator_next() => {
+                self.fetch_block_key(start)
+            }
             '?' if self.indicator_terminator_next() => Ok(self.single_char(TokenKind::Key, start)),
             '\'' => self.scan_single_quoted(start),
             '"' => self.scan_double_quoted(start),
@@ -1134,6 +1137,21 @@ impl<'a> Scanner<'a> {
         self.simple_key_allowed = true;
         Ok(Token::new(
             TokenKind::BlockEntry,
+            Span::new(start, self.reader.position()),
+        ))
+    }
+
+    /// Handles a `?` explicit block mapping key: opens a mapping if needed and
+    /// emits `Key`. The following key node is not an implicit simple key, so
+    /// `simple_key_allowed` is cleared until the next line break.
+    fn fetch_block_key(&mut self, start: Position) -> Result<Token> {
+        let col = Self::col0(start);
+        self.roll_indent(col, TokenKind::BlockMappingStart, start, None);
+        self.remove_simple_key();
+        self.reader.advance(); // consume '?'
+        self.simple_key_allowed = false;
+        Ok(Token::new(
+            TokenKind::Key,
             Span::new(start, self.reader.position()),
         ))
     }

@@ -1566,6 +1566,50 @@ mod tests {
     }
 
     #[test]
+    fn explicit_block_mapping_key() {
+        // `? sky` / `: blue` is an explicit key/value pair.
+        assert_eq!(
+            kinds("? sky\n: blue\n"),
+            vec![
+                EventKind::StreamStart,
+                EventKind::DocumentStart,
+                EventKind::MappingStart {
+                    anchor: None,
+                    tag: None
+                },
+                EventKind::Scalar {
+                    value: "sky".to_string(),
+                    style: ScalarStyle::Plain,
+                    anchor: None,
+                    tag: None
+                },
+                EventKind::Scalar {
+                    value: "blue".to_string(),
+                    style: ScalarStyle::Plain,
+                    anchor: None,
+                    tag: None
+                },
+                EventKind::MappingEnd,
+                EventKind::DocumentEnd,
+                EventKind::StreamEnd,
+            ]
+        );
+    }
+
+    #[test]
+    fn explicit_key_with_empty_value() {
+        // `? a` with no `:` value is a key with an empty value.
+        let evs = kinds("? a\n? b\n");
+        assert!(matches!(evs[2], EventKind::MappingStart { .. }));
+        // 4 scalars: a, "", b, "" (each explicit key gets an empty value).
+        let scalars = evs
+            .iter()
+            .filter(|e| matches!(e, EventKind::Scalar { .. }))
+            .count();
+        assert_eq!(scalars, 4);
+    }
+
+    #[test]
     fn empty_implicit_keys_block_mapping() {
         // `: a` / `: b` are entries with empty (implicit) keys.
         assert_eq!(
