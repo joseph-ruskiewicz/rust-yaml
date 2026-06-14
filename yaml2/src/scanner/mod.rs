@@ -1318,6 +1318,8 @@ impl<'a> Scanner<'a> {
         });
 
         let mut lines: Vec<(String, bool)> = Vec::new();
+        // For auto-detected indentation, the most-indented leading empty line.
+        let mut max_leading_blank: usize = 0;
         loop {
             let sp = self.reader.count_leading_spaces();
             let after = self.reader.peek_nth(sp);
@@ -1326,6 +1328,9 @@ impl<'a> Scanner<'a> {
             }
             let blank = matches!(after, Some('\n') | Some('\r'));
             if blank {
+                if content_indent.is_none() {
+                    max_leading_blank = max_leading_blank.max(sp);
+                }
                 for _ in 0..sp {
                     self.reader.advance();
                 }
@@ -1338,6 +1343,15 @@ impl<'a> Scanner<'a> {
                 None => {
                     if (sp as i64) <= parent {
                         break;
+                    }
+                    // A leading empty line may not be more indented than the
+                    // first content line (auto-detected indentation).
+                    if max_leading_blank > sp {
+                        return Err(Error::new(
+                            ErrorKind::Scan,
+                            "a leading empty line is more indented than the block scalar content",
+                        )
+                        .with_span(Span::new(start, self.reader.position())));
                     }
                     content_indent = Some(sp);
                     sp
@@ -1671,6 +1685,18 @@ mod tests {
         assert_eq!(
             one_scalar("|2\n  a\n    b\n"),
             ("a\n  b\n".to_string(), ScalarStyle::Literal)
+        );
+    }
+
+    #[test]
+    fn block_scalar_over_indented_leading_blank_is_rejected() {
+        // An auto-detected block scalar whose leading empty line is more
+        // indented than the first content line is invalid.
+        assert_eq!(
+            tokenize("x: >\n   \n  content\n", Limits::default())
+                .unwrap_err()
+                .kind(),
+            crate::error::ErrorKind::Scan
         );
     }
 
