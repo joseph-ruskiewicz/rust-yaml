@@ -331,7 +331,17 @@ impl<'a> Scanner<'a> {
                 // `...` closes the document; the next directive block is fresh.
                 self.doc_open = false;
                 self.yaml_directive_seen = false;
-                Ok(self.scan_marker(TokenKind::DocumentEnd, start))
+                let token = self.scan_marker(TokenKind::DocumentEnd, start);
+                // Only whitespace or a comment may follow `...` on its line.
+                let trailing = self.reader.peek_nth(self.reader.count_leading_spaces());
+                match trailing {
+                    None | Some('\n') | Some('\r') | Some('#') => Ok(token),
+                    Some(_) => Err(Error::new(
+                        ErrorKind::Scan,
+                        "content is not allowed after a '...' document end marker",
+                    )
+                    .with_span(Span::new(start, self.reader.position()))),
+                }
             }
             '[' => {
                 self.flow_depth += 1;
@@ -1459,6 +1469,18 @@ mod tests {
                 TokenKind::StreamEnd,
             ]
         );
+    }
+
+    #[test]
+    fn content_after_document_end_marker_is_error() {
+        assert_eq!(
+            tokenize("---\nx\n... junk\n", Limits::default())
+                .unwrap_err()
+                .kind(),
+            crate::error::ErrorKind::Scan
+        );
+        // A trailing comment after `...` is fine.
+        assert!(tokenize("---\nx\n... # bye\n", Limits::default()).is_ok());
     }
 
     #[test]
