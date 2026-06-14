@@ -318,6 +318,19 @@ impl ParserState {
                         self.emit_empty_scalar();
                     }
                 }
+                Some(TokenKind::Value) => {
+                    // Entry with an empty (implicit) key: `: value`.
+                    self.emit_empty_scalar();
+                    self.bump();
+                    if matches!(
+                        self.peek(),
+                        Some(TokenKind::Key) | Some(TokenKind::Value) | Some(TokenKind::BlockEnd)
+                    ) {
+                        self.emit_empty_scalar();
+                    } else {
+                        self.parse_node()?;
+                    }
+                }
                 Some(TokenKind::BlockEnd) => {
                     let end = self.bump();
                     self.emit(EventKind::MappingEnd, end.span);
@@ -1550,6 +1563,49 @@ mod tests {
     fn unexpected_document_level_token_errors_without_hanging() {
         let err = parse_events("]", &ParseOptions::default()).unwrap_err();
         assert_eq!(err.kind(), crate::error::ErrorKind::Parse);
+    }
+
+    #[test]
+    fn empty_implicit_keys_block_mapping() {
+        // `: a` / `: b` are entries with empty (implicit) keys.
+        assert_eq!(
+            kinds(": a\n: b\n"),
+            vec![
+                EventKind::StreamStart,
+                EventKind::DocumentStart,
+                EventKind::MappingStart {
+                    anchor: None,
+                    tag: None
+                },
+                EventKind::Scalar {
+                    value: String::new(),
+                    style: ScalarStyle::Plain,
+                    anchor: None,
+                    tag: None
+                },
+                EventKind::Scalar {
+                    value: "a".to_string(),
+                    style: ScalarStyle::Plain,
+                    anchor: None,
+                    tag: None
+                },
+                EventKind::Scalar {
+                    value: String::new(),
+                    style: ScalarStyle::Plain,
+                    anchor: None,
+                    tag: None
+                },
+                EventKind::Scalar {
+                    value: "b".to_string(),
+                    style: ScalarStyle::Plain,
+                    anchor: None,
+                    tag: None
+                },
+                EventKind::MappingEnd,
+                EventKind::DocumentEnd,
+                EventKind::StreamEnd,
+            ]
+        );
     }
 
     #[test]
