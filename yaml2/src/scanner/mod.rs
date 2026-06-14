@@ -55,6 +55,10 @@ pub(crate) struct Scanner<'a> {
     at_line_start: bool,
     /// True when a tab has appeared in the current line's leading whitespace.
     tab_in_indent: bool,
+    /// True when a tab appeared in the whitespace immediately before the current
+    /// token (block context). Distinguishes a tab indenting a block level
+    /// opened mid-line (e.g. `- \t-`) from a tab on a leading-whitespace line.
+    tab_before_token: bool,
     /// True once the current document has begun (a `---` or first content token).
     /// Directives are only valid before a document, after a `...` footer.
     doc_open: bool,
@@ -102,6 +106,7 @@ impl<'a> Scanner<'a> {
             next_doc_needs_reset: true,
             at_line_start: true,
             tab_in_indent: false,
+            tab_before_token: false,
             doc_open: false,
             pending_directives: false,
             yaml_directive_seen: false,
@@ -242,6 +247,9 @@ impl<'a> Scanner<'a> {
         // Column 1 means the cursor sits at the start of a line (robust even
         // after multi-line scanners that leave `at_line_start` stale).
         let mut separated = self.reader.position().column == 1;
+        // Reset the per-token tab marker; it tracks a tab in the whitespace
+        // immediately preceding the token this call is advancing to.
+        self.tab_before_token = false;
         loop {
             match self.reader.peek() {
                 Some(' ') => {
@@ -249,13 +257,16 @@ impl<'a> Scanner<'a> {
                     self.reader.advance();
                 }
                 Some('\t') => {
-                    // Record a tab in the line's leading whitespace. Whether it
-                    // is illegal is decided when a block level is opened
-                    // (`roll_indent`): a tab is fine before a flow node or a
-                    // scalar value, but not as the indentation of a block
-                    // collection.
-                    if self.flow_depth == 0 && self.at_line_start {
-                        self.tab_in_indent = true;
+                    // Record the tab. Whether it is illegal is decided when a
+                    // block level is opened (`roll_indent`): a tab is fine before
+                    // a flow node or a scalar value, but not as the indentation of
+                    // a block collection (whether on a leading line, `tab_in_indent`,
+                    // or before a mid-line indicator, `tab_before_token`).
+                    if self.flow_depth == 0 {
+                        self.tab_before_token = true;
+                        if self.at_line_start {
+                            self.tab_in_indent = true;
+                        }
                     }
                     separated = true;
                     self.reader.advance();
@@ -267,6 +278,9 @@ impl<'a> Scanner<'a> {
                     }
                     self.at_line_start = true;
                     self.tab_in_indent = false;
+                    // A tab before the break was trailing, not the next line's
+                    // indentation.
+                    self.tab_before_token = false;
                     separated = true;
                 }
                 Some('#') => {
@@ -1107,7 +1121,7 @@ impl<'a> Scanner<'a> {
         if self.indent < col {
             // Opening a new block level whose indentation was reached through a
             // tab is illegal — tabs cannot be used for indentation.
-            if self.tab_in_indent {
+            if self.tab_in_indent || self.tab_before_token {
                 return Err(
                     Error::new(ErrorKind::Scan, "tabs cannot be used for indentation")
                         .with_span(Span::new(mark, mark)),
@@ -3289,6 +3303,22 @@ mod tests {
     fn leading_tab_indentation_is_rejected() {
         let err = tokenize("\tkey: value", Limits::default()).unwrap_err();
         assert_eq!(err.kind(), crate::error::ErrorKind::Scan);
+    }
+
+    #[test]
+    fn tab_indenting_a_block_entry_is_rejected() {
+        // A tab in the separation before a `-` that opens a block level is the
+        // sequence's indentation — illegal.
+        assert_eq!(
+            tokenize("-\t-\n", Limits::default()).unwrap_err().kind(),
+            crate::error::ErrorKind::Scan
+        );
+    }
+
+    #[test]
+    fn trailing_tab_does_not_taint_next_line() {
+        // A trailing tab is separation, not the next line's indentation.
+        assert!(tokenize("seq:\t\n - a\n", Limits::default()).is_ok());
     }
 
     #[test]
