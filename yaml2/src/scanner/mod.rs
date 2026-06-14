@@ -86,6 +86,8 @@ struct SimpleKey {
     mark: Position,
     /// Line the key began on (a key must be resolved on the same line).
     line: usize,
+    /// Whether a tab preceded the key (illegal if it later opens a block level).
+    tab_before: bool,
 }
 
 impl<'a> Scanner<'a> {
@@ -411,6 +413,7 @@ impl<'a> Scanner<'a> {
                 token_number: self.tokens_parsed + self.tokens.len(),
                 mark,
                 line: mark.line,
+                tab_before: self.tab_before_token,
             });
         }
     }
@@ -484,6 +487,14 @@ impl<'a> Scanner<'a> {
                 key.mark,
                 Some(at),
             )? {
+                // The mapping's indentation is the key's column; if a tab led to
+                // it (e.g. `?\tkey:`), that is illegal indentation.
+                if key.tab_before {
+                    return Err(
+                        Error::new(ErrorKind::Scan, "tabs cannot be used for indentation")
+                            .with_span(Span::new(key.mark, key.mark)),
+                    );
+                }
                 at += 1;
             }
             self.tokens.insert(
@@ -1178,14 +1189,16 @@ impl<'a> Scanner<'a> {
     }
 
     /// Handles a `?` explicit block mapping key: opens a mapping if needed and
-    /// emits `Key`. The following key node is not an implicit simple key, so
-    /// `simple_key_allowed` is cleared until the next line break.
+    /// emits `Key`. A node may follow on the same line — including a compact
+    /// block sequence, `? - item` — so `simple_key_allowed` stays true. Illegal
+    /// tab indentation in what follows is caught by `roll_indent` /
+    /// `SimpleKey::tab_before`.
     fn fetch_block_key(&mut self, start: Position) -> Result<Token> {
         let col = Self::col0(start);
         self.roll_indent(col, TokenKind::BlockMappingStart, start, None)?;
         self.remove_simple_key();
         self.reader.advance(); // consume '?'
-        self.simple_key_allowed = false;
+        self.simple_key_allowed = true;
         Ok(Token::new(
             TokenKind::Key,
             Span::new(start, self.reader.position()),
@@ -3303,6 +3316,21 @@ mod tests {
     fn leading_tab_indentation_is_rejected() {
         let err = tokenize("\tkey: value", Limits::default()).unwrap_err();
         assert_eq!(err.kind(), crate::error::ErrorKind::Scan);
+    }
+
+    #[test]
+    fn compact_sequence_as_explicit_key_is_allowed() {
+        // `? - a` — a compact block sequence as an explicit mapping key.
+        assert!(tokenize("? - a\n  - b\n: value\n", Limits::default()).is_ok());
+    }
+
+    #[test]
+    fn tab_after_explicit_key_indicator_is_rejected() {
+        // A tab indenting the key after `?` (`?\tkey:`) is illegal indentation.
+        assert_eq!(
+            tokenize("?\tkey:\n", Limits::default()).unwrap_err().kind(),
+            crate::error::ErrorKind::Scan
+        );
     }
 
     #[test]
