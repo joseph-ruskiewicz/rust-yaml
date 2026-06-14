@@ -100,6 +100,10 @@ impl ParserState {
             _ => return Err(self.error("expected stream start")),
         }
 
+        // A markerless ("bare") document is only allowed as the first document
+        // or immediately after a `...` end marker; otherwise a new document must
+        // begin with `---`.
+        let mut allow_bare = true;
         loop {
             let pos_before = self.pos;
             match self.peek() {
@@ -113,19 +117,25 @@ impl ParserState {
                 }
                 Some(TokenKind::DocumentEnd) => {
                     self.bump();
+                    allow_bare = true;
                 }
                 Some(TokenKind::DocumentStart) => {
                     let span = self.span();
                     self.bump();
                     self.emit(EventKind::DocumentStart, span);
                     self.parse_document_content()?;
-                    self.finish_document();
+                    allow_bare = self.finish_document();
                 }
                 _ => {
+                    if !allow_bare {
+                        return Err(self.error(
+                            "a new document must start with '---' or follow a '...' marker",
+                        ));
+                    }
                     let span = self.span();
                     self.emit(EventKind::DocumentStart, span);
                     self.parse_document_content()?;
-                    self.finish_document();
+                    allow_bare = self.finish_document();
                 }
             }
             // No-progress guard: if an iteration consumed no token, the parser
@@ -151,13 +161,16 @@ impl ParserState {
         }
     }
 
-    /// Emits `DocumentEnd`, consuming an optional `...` token.
-    fn finish_document(&mut self) {
+    /// Emits `DocumentEnd`, consuming an optional `...` token. Returns true when
+    /// a `...` was consumed (which permits a following bare document).
+    fn finish_document(&mut self) -> bool {
         let span = self.span();
-        if matches!(self.peek(), Some(TokenKind::DocumentEnd)) {
+        let consumed_end = matches!(self.peek(), Some(TokenKind::DocumentEnd));
+        if consumed_end {
             self.bump();
         }
         self.emit(EventKind::DocumentEnd, span);
+        consumed_end
     }
 
     fn parse_node(&mut self) -> Result<()> {
@@ -1537,6 +1550,18 @@ mod tests {
     fn unexpected_document_level_token_errors_without_hanging() {
         let err = parse_events("]", &ParseOptions::default()).unwrap_err();
         assert_eq!(err.kind(), crate::error::ErrorKind::Parse);
+    }
+
+    #[test]
+    fn second_bare_document_without_marker_is_error() {
+        // After a complete root node, more top-level content needs a `---`.
+        let err = parse_events("[a]\nb\n", &ParseOptions::default()).unwrap_err();
+        assert_eq!(err.kind(), crate::error::ErrorKind::Parse);
+    }
+
+    #[test]
+    fn bare_document_after_explicit_end_is_ok() {
+        assert!(parse_events("--- a\n...\nb\n", &ParseOptions::default()).is_ok());
     }
 
     #[test]
