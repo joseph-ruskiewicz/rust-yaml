@@ -37,6 +37,10 @@ pub(crate) struct Scanner<'a> {
     started: bool,
     stream_end_produced: bool,
     flow_depth: usize,
+    /// True when the previous flow token was a node (scalar, or `]`/`}`), so a
+    /// following `:` is an adjacent (JSON-style) value indicator — even across
+    /// line breaks — e.g. `"a":"b"` or `"foo"\n  :bar`.
+    flow_adjacent_value: bool,
     /// Current block indentation as a 0-based column; -1 == root.
     indent: i64,
     /// Stack of enclosing block indentations.
@@ -100,6 +104,7 @@ impl<'a> Scanner<'a> {
             started: false,
             stream_end_produced: false,
             flow_depth: 0,
+            flow_adjacent_value: false,
             indent: -1,
             indents: Vec::new(),
             simple_key_allowed: true,
@@ -236,6 +241,14 @@ impl<'a> Scanner<'a> {
                     // the first token on the next line can still be a mapping key.
                     self.simple_key_allowed = Self::is_block_scalar(&token.kind);
                 }
+                // After a flow node (scalar, or a `]`/`}` collection), a `:` is
+                // an adjacent value indicator; any other token clears that.
+                self.flow_adjacent_value = matches!(
+                    token.kind,
+                    TokenKind::Scalar { .. }
+                        | TokenKind::FlowSequenceEnd
+                        | TokenKind::FlowMappingEnd
+                );
                 self.tokens.push_back(token);
                 Ok(())
             }
@@ -372,7 +385,9 @@ impl<'a> Scanner<'a> {
                 Ok(self.single_char(TokenKind::FlowMappingEnd, start))
             }
             ',' => Ok(self.single_char(TokenKind::FlowEntry, start)),
-            ':' if self.flow_depth > 0 || self.colon_block_terminator() => {
+            ':' if (self.flow_depth > 0 && self.colon_flow_value_indicator())
+                || (self.flow_depth == 0 && self.colon_block_terminator()) =>
+            {
                 if self.flow_depth == 0 {
                     self.fetch_block_value(start)
                 } else {
@@ -1214,6 +1229,14 @@ impl<'a> Scanner<'a> {
             self.reader.peek_nth(1),
             None | Some(' ') | Some('\t') | Some('\n') | Some('\r')
         )
+    }
+
+    /// True if a `:` here is a flow-context value indicator: either it is
+    /// followed by a separator/flow indicator, or it is adjacent to the
+    /// preceding flow scalar (JSON-style `"a":"b"`). Otherwise `:` followed by
+    /// other content (`:x`) is a plain-scalar character.
+    fn colon_flow_value_indicator(&self) -> bool {
+        self.indicator_terminator_next() || self.flow_adjacent_value
     }
 
     /// True if the character after the current one is whitespace, a line break,
@@ -2212,6 +2235,32 @@ mod tests {
                 TokenKind::StreamEnd,
             ]
         );
+    }
+
+    #[test]
+    fn flow_colon_value_indicator_only_when_adjacent_or_terminated() {
+        // A `:` adjacent to a quoted key is a value indicator (`"a":"b"` already
+        // covered); a non-adjacent `:x` after a space is plain content.
+        assert_eq!(
+            kinds("{x: :x}"),
+            vec![
+                TokenKind::StreamStart,
+                TokenKind::FlowMappingStart,
+                TokenKind::Scalar {
+                    value: "x".to_string(),
+                    style: ScalarStyle::Plain
+                },
+                TokenKind::Value,
+                TokenKind::Scalar {
+                    value: ":x".to_string(),
+                    style: ScalarStyle::Plain
+                },
+                TokenKind::FlowMappingEnd,
+                TokenKind::StreamEnd,
+            ]
+        );
+        // Adjacent value works across a line break after the (quoted) key.
+        assert!(tokenize("{ \"foo\"\n  :bar }", Limits::default()).is_ok());
     }
 
     #[test]
