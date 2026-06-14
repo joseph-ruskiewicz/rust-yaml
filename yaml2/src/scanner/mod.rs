@@ -55,6 +55,15 @@ pub(crate) struct Scanner<'a> {
     at_line_start: bool,
     /// True when a tab has appeared in the current line's leading whitespace.
     tab_in_indent: bool,
+    /// True once the current document has begun (a `---` or first content token).
+    /// Directives are only valid before a document, after a `...` footer.
+    doc_open: bool,
+    /// True when at least one directive has been collected for the upcoming
+    /// document; it must be followed by an explicit `---` document start.
+    pending_directives: bool,
+    /// True when a `%YAML` directive has been seen in the current directive block
+    /// (at most one is allowed per document).
+    yaml_directive_seen: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -93,6 +102,9 @@ impl<'a> Scanner<'a> {
             next_doc_needs_reset: true,
             at_line_start: true,
             tab_in_indent: false,
+            doc_open: false,
+            pending_directives: false,
+            yaml_directive_seen: false,
         }
     }
 
@@ -144,11 +156,21 @@ impl<'a> Scanner<'a> {
         self.skip_to_next_token();
         self.stale_simple_key();
 
-        // A `%` at column 1 in block context begins a directive line.
+        // A `%` at column 1 in block context begins a directive line. Directives
+        // are only valid before a document; inside a body a `...` footer is
+        // required first.
         if self.flow_depth == 0
             && self.reader.peek() == Some('%')
             && self.reader.position().column == 1
         {
+            if self.doc_open {
+                let pos = self.reader.position();
+                return Err(Error::new(
+                    ErrorKind::Scan,
+                    "directives must be preceded by a '...' document end",
+                )
+                .with_span(Span::new(pos, pos)));
+            }
             self.scan_directive()?;
             return Ok(());
         }
@@ -170,6 +192,13 @@ impl<'a> Scanner<'a> {
         let start = self.reader.position();
         match self.reader.peek() {
             None => {
+                if self.pending_directives {
+                    return Err(Error::new(
+                        ErrorKind::Scan,
+                        "directives must be followed by a '---' document start",
+                    )
+                    .with_span(Span::new(start, start)));
+                }
                 self.simple_key = None;
                 if self.flow_depth == 0 {
                     self.unroll_indent(-1);
@@ -184,6 +213,25 @@ impl<'a> Scanner<'a> {
                     self.save_simple_key(start);
                 }
                 let token = self.scan_content(c, start)?;
+                // The first content token of a document opens it. Directives
+                // require an explicit `---`, so bare content with pending
+                // directives is invalid.
+                if self.flow_depth == 0
+                    && !self.doc_open
+                    && !matches!(
+                        token.kind,
+                        TokenKind::DocumentStart | TokenKind::DocumentEnd
+                    )
+                {
+                    if self.pending_directives {
+                        return Err(Error::new(
+                            ErrorKind::Scan,
+                            "directives must be followed by a '---' document start",
+                        )
+                        .with_span(Span::new(start, start)));
+                    }
+                    self.doc_open = true;
+                }
                 if self.flow_depth == 0 && Self::is_node_token(&token.kind) {
                     // Block scalars end at a dedent boundary (already at the
                     // start of a new line). Keep simple_key_allowed true so that
@@ -245,14 +293,28 @@ impl<'a> Scanner<'a> {
                     self.reset_tag_handles();
                 }
                 self.next_doc_needs_reset = true;
+                // `---` consumes any pending directives and opens the document.
+                self.pending_directives = false;
+                self.yaml_directive_seen = false;
+                self.doc_open = true;
                 Ok(self.scan_marker(TokenKind::DocumentStart, start))
             }
             '.' if self.marker_ahead("...") => {
+                if self.pending_directives {
+                    return Err(Error::new(
+                        ErrorKind::Scan,
+                        "directives must be followed by a '---' document start",
+                    )
+                    .with_span(Span::new(start, start)));
+                }
                 self.unroll_indent(-1);
                 self.remove_simple_key();
                 self.simple_key_allowed = true;
                 self.reset_tag_handles();
                 self.next_doc_needs_reset = true;
+                // `...` closes the document; the next directive block is fresh.
+                self.doc_open = false;
+                self.yaml_directive_seen = false;
                 Ok(self.scan_marker(TokenKind::DocumentEnd, start))
             }
             '[' => {
@@ -529,6 +591,7 @@ impl<'a> Scanner<'a> {
     /// the handle map. Directives apply to the upcoming document only, so the
     /// first directive of a new document block resets the map. Produces no token.
     fn scan_directive(&mut self) -> Result<()> {
+        let start = self.reader.position();
         if self.next_doc_needs_reset {
             self.reset_tag_handles();
             self.next_doc_needs_reset = false;
@@ -543,13 +606,57 @@ impl<'a> Scanner<'a> {
             if !handle.is_empty() && !prefix.is_empty() {
                 self.tag_handles.insert(handle, prefix);
             }
+        } else if name == "YAML" {
+            if self.yaml_directive_seen {
+                return Err(Error::new(
+                    ErrorKind::Scan,
+                    "a document may have at most one %YAML directive",
+                )
+                .with_span(Span::new(start, self.reader.position())));
+            }
+            self.skip_inline_blanks();
+            let version = self.take_directive_word();
+            if !Self::is_yaml_version(&version) {
+                return Err(Error::new(
+                    ErrorKind::Scan,
+                    format!("invalid %YAML version {version:?}"),
+                )
+                .with_span(Span::new(start, self.reader.position())));
+            }
+            // Only a trailing comment may follow the version.
+            self.skip_inline_blanks();
+            match self.reader.peek() {
+                None | Some('\n') | Some('\r') | Some('#') => {}
+                Some(_) => {
+                    return Err(Error::new(
+                        ErrorKind::Scan,
+                        "extra content after the %YAML directive version",
+                    )
+                    .with_span(Span::new(start, self.reader.position())))
+                }
+            }
+            self.yaml_directive_seen = true;
         }
-        // `%YAML` and any unknown directive are accepted and ignored.
+        // Any unknown directive is accepted and ignored.
         // Consume the rest of the line (the line break is left for the caller).
         while !matches!(self.reader.peek(), None | Some('\n') | Some('\r')) {
             self.reader.advance();
         }
+        self.pending_directives = true;
         Ok(())
+    }
+
+    /// True if `v` is a `major.minor` YAML version (both parts ASCII digits).
+    fn is_yaml_version(v: &str) -> bool {
+        match v.split_once('.') {
+            Some((major, minor)) => {
+                !major.is_empty()
+                    && !minor.is_empty()
+                    && major.bytes().all(|b| b.is_ascii_digit())
+                    && minor.bytes().all(|b| b.is_ascii_digit())
+            }
+            None => false,
+        }
     }
 
     /// Consumes a run of non-whitespace characters (a directive token).

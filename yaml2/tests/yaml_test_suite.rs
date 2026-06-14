@@ -10,8 +10,8 @@
 //!     skip-list can only shrink, never silently hide a fix.
 //!   * No case may panic, ever (panics are failures regardless of the skip-list).
 //!
-//! Current baseline: 311/402 (77.4%). The 91 entries below are documented gaps
-//! to be driven down by follow-on work (scalar edge cases, flow-context plain
+//! Current baseline: 320/402 (79.6%). The entries below are documented gaps to
+//! be driven down by follow-on work (scalar edge cases, flow-context plain
 //! scalars, indentation corner cases, etc.).
 
 use std::fs;
@@ -22,11 +22,10 @@ use std::path::{Path, PathBuf};
 /// the case directory path relative to `data/`, using `/` separators.
 const KNOWN_FAILURES: &[&str] = &[
     // -- over-accepted: malformed input we wrongly parse --
-    "2G84/00", "2G84/01", "3HFZ", "5LLU", "5TRB", "5U3A", "9C9N", "9HCY", "9JBA", "9KBC", "9MAG",
-    "9MMA", "9MQT/01", "B63P", "BS4K", "CTN5", "CVW2", "CXX2", "DK4H", "DK95/01", "EB22", "G5U8",
-    "G9HC", "H7J7", "H7TQ", "KS4U", "LHL4", "MUS6/00", "MUS6/01", "QB6E", "RHX7", "RXY3", "S98Z",
-    "SF5V", "SU5Z", "SY6V", "VJP3/00", "W9L4", "X4QW", "Y79Y/000", "Y79Y/003", "Y79Y/004",
-    "Y79Y/005", "YJV2", "ZXT5",
+    "2G84/00", "2G84/01", "3HFZ", "5LLU", "5TRB", "5U3A", "9C9N", "9JBA", "9KBC", "9MAG", "9MQT/01",
+    "BS4K", "CTN5", "CVW2", "CXX2", "DK4H", "DK95/01", "G5U8", "G9HC", "H7J7", "KS4U", "LHL4",
+    "QB6E", "RXY3", "S98Z", "SU5Z", "SY6V", "VJP3/00", "W9L4", "X4QW", "Y79Y/000", "Y79Y/003",
+    "Y79Y/004", "Y79Y/005", "YJV2", "ZXT5",
     // -- under-rejected: valid YAML we wrongly reject --
     "2EBW", "2JQS", "2SXE", "2XXW", "35KP", "4WA9", "58MP", "5T43", "5WE3", "6CA3", "6M2F", "6PBE",
     "7W2P", "A2M4", "AB8U", "AZW3", "CT4Q", "D83L", "DBG4", "DK95/00", "F6MC", "FBC9", "GH63",
@@ -74,7 +73,11 @@ fn yaml_test_suite_conformance() {
     let mut cases = Vec::new();
     collect_cases(&root, &root, &mut cases);
     cases.sort();
-    assert!(cases.len() > 300, "expected the full suite, found {}", cases.len());
+    assert!(
+        cases.len() > 300,
+        "expected the full suite, found {}",
+        cases.len()
+    );
 
     let known: std::collections::HashSet<&str> = KNOWN_FAILURES.iter().copied().collect();
 
