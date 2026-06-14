@@ -175,15 +175,6 @@ impl<'a> Scanner<'a> {
             return Ok(());
         }
 
-        // Tabs may not be used for indentation in block context.
-        if self.flow_depth == 0 && self.tab_in_indent && self.reader.peek().is_some() {
-            let pos = self.reader.position();
-            return Err(
-                Error::new(ErrorKind::Scan, "tabs cannot be used for indentation")
-                    .with_span(Span::new(pos, pos)),
-            );
-        }
-
         // Block context: process indentation at the start of a line.
         if self.flow_depth == 0 {
             self.unroll_indent(Self::col0(self.reader.position()));
@@ -258,6 +249,11 @@ impl<'a> Scanner<'a> {
                     self.reader.advance();
                 }
                 Some('\t') => {
+                    // Record a tab in the line's leading whitespace. Whether it
+                    // is illegal is decided when a block level is opened
+                    // (`roll_indent`): a tab is fine before a flow node or a
+                    // scalar value, but not as the indentation of a block
+                    // collection.
                     if self.flow_depth == 0 && self.at_line_start {
                         self.tab_in_indent = true;
                     }
@@ -473,7 +469,7 @@ impl<'a> Scanner<'a> {
                 TokenKind::BlockMappingStart,
                 key.mark,
                 Some(at),
-            ) {
+            )? {
                 at += 1;
             }
             self.tokens.insert(
@@ -482,7 +478,7 @@ impl<'a> Scanner<'a> {
             );
             self.simple_key_allowed = false;
         } else {
-            self.roll_indent(Self::col0(start), TokenKind::BlockMappingStart, start, None);
+            self.roll_indent(Self::col0(start), TokenKind::BlockMappingStart, start, None)?;
             self.simple_key_allowed = true;
         }
         self.reader.advance(); // consume ':'
@@ -1104,11 +1100,19 @@ impl<'a> Scanner<'a> {
         start_kind: TokenKind,
         mark: Position,
         at: Option<usize>,
-    ) -> bool {
+    ) -> Result<bool> {
         if self.flow_depth > 0 {
-            return false;
+            return Ok(false);
         }
         if self.indent < col {
+            // Opening a new block level whose indentation was reached through a
+            // tab is illegal — tabs cannot be used for indentation.
+            if self.tab_in_indent {
+                return Err(
+                    Error::new(ErrorKind::Scan, "tabs cannot be used for indentation")
+                        .with_span(Span::new(mark, mark)),
+                );
+            }
             self.indents.push(self.indent);
             self.indent = col;
             if let Some(i) = at {
@@ -1122,9 +1126,9 @@ impl<'a> Scanner<'a> {
                 Some(i) => self.tokens.insert(i, token),
                 None => self.tokens.push_back(token),
             }
-            true
+            Ok(true)
         } else {
-            false
+            Ok(false)
         }
     }
 
@@ -1150,7 +1154,7 @@ impl<'a> Scanner<'a> {
             .with_span(Span::new(start, start)));
         }
         let col = Self::col0(start);
-        self.roll_indent(col, TokenKind::BlockSequenceStart, start, None);
+        self.roll_indent(col, TokenKind::BlockSequenceStart, start, None)?;
         self.reader.advance(); // consume '-'
         self.simple_key_allowed = true;
         Ok(Token::new(
@@ -1164,7 +1168,7 @@ impl<'a> Scanner<'a> {
     /// `simple_key_allowed` is cleared until the next line break.
     fn fetch_block_key(&mut self, start: Position) -> Result<Token> {
         let col = Self::col0(start);
-        self.roll_indent(col, TokenKind::BlockMappingStart, start, None);
+        self.roll_indent(col, TokenKind::BlockMappingStart, start, None)?;
         self.remove_simple_key();
         self.reader.advance(); // consume '?'
         self.simple_key_allowed = false;
@@ -3285,6 +3289,16 @@ mod tests {
     fn leading_tab_indentation_is_rejected() {
         let err = tokenize("\tkey: value", Limits::default()).unwrap_err();
         assert_eq!(err.kind(), crate::error::ErrorKind::Scan);
+    }
+
+    #[test]
+    fn leading_tab_before_flow_or_value_is_allowed() {
+        // A tab is illegal only as the indentation of a block collection. Before
+        // a flow node at root, or after spaces that already meet the indent, it
+        // is valid separation.
+        assert!(tokenize("\t{}\n", Limits::default()).is_ok()); // tab then flow at root
+        assert!(tokenize("\t[\n\t]\n", Limits::default()).is_ok()); // tab-indented flow
+        assert!(tokenize("foo:\n \tbar\n", Limits::default()).is_ok()); // space meets indent, then tab
     }
 
     #[test]
