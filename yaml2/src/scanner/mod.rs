@@ -1154,7 +1154,7 @@ impl<'a> Scanner<'a> {
     /// Parses the block-scalar header after `|`/`>`: chomping (`-`/`+`) and an
     /// indentation indicator (1-9) in any order, then skips trailing spaces, an
     /// optional comment, and the header line break.
-    fn scan_block_scalar_header(&mut self) -> (Chomping, Option<usize>) {
+    fn scan_block_scalar_header(&mut self, start: Position) -> Result<(Chomping, Option<usize>)> {
         let mut chomp = Chomping::Clip;
         let mut indent: Option<usize> = None;
         loop {
@@ -1174,25 +1174,37 @@ impl<'a> Scanner<'a> {
                 _ => break,
             }
         }
+        let mut had_space = false;
         while matches!(self.reader.peek(), Some(' ') | Some('\t')) {
+            had_space = true;
             self.reader.advance();
         }
-        if self.reader.peek() == Some('#') {
-            while let Some(c) = self.reader.peek() {
-                if c == '\n' || c == '\r' {
-                    break;
+        // After the indicators, only a comment (whitespace-preceded) or the end
+        // of the line may follow. A leftover digit (`|0`, `|10`) or `#` without a
+        // preceding space (`>#`) is an invalid header.
+        match self.reader.peek() {
+            None | Some('\n') | Some('\r') => {}
+            Some('#') if had_space => {
+                while let Some(c) = self.reader.peek() {
+                    if c == '\n' || c == '\r' {
+                        break;
+                    }
+                    self.reader.advance();
                 }
-                self.reader.advance();
+            }
+            Some(_) => {
+                return Err(Error::new(ErrorKind::Scan, "invalid block scalar header")
+                    .with_span(Span::new(start, self.reader.position())))
             }
         }
         self.consume_line_break();
-        (chomp, indent)
+        Ok((chomp, indent))
     }
 
     /// Scans a block scalar (`literal` = `|`, else `>`).
     fn scan_block_scalar(&mut self, literal: bool, start: Position) -> Result<Token> {
         self.reader.advance(); // '|' or '>'
-        let (chomp, explicit_indent) = self.scan_block_scalar_header();
+        let (chomp, explicit_indent) = self.scan_block_scalar_header(start)?;
         let parent = self.indent; // 0-based; -1 at root
 
         let mut content_indent: Option<usize> = explicit_indent.map(|n| {
@@ -1500,6 +1512,17 @@ mod tests {
             one_scalar("|\n  line one\n  line two\n"),
             ("line one\nline two\n".to_string(), ScalarStyle::Literal)
         );
+    }
+
+    #[test]
+    fn invalid_block_scalar_headers_error() {
+        for input in ["|0\n x\n", "|10\n x\n", ">#c\n  x\n"] {
+            assert_eq!(
+                tokenize(input, Limits::default()).unwrap_err().kind(),
+                crate::error::ErrorKind::Scan,
+                "expected scan error for {input:?}"
+            );
+        }
     }
 
     #[test]
