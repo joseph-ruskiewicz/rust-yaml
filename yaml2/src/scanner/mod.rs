@@ -209,7 +209,7 @@ impl<'a> Scanner<'a> {
                 Ok(())
             }
             Some(c) => {
-                if self.flow_depth == 0 && Self::can_start_simple_key(c) {
+                if self.flow_depth == 0 && self.can_start_simple_key(c) {
                     self.save_simple_key(start);
                 }
                 let token = self.scan_content(c, start)?;
@@ -449,13 +449,17 @@ impl<'a> Scanner<'a> {
         )
     }
 
-    /// Whether `c` begins a node that could serve as a block mapping key
-    /// (scalar, anchor, alias, or tag — i.e. not a structural indicator).
-    fn can_start_simple_key(c: char) -> bool {
-        !matches!(
-            c,
-            '-' | '?' | ':' | ',' | '[' | ']' | '{' | '}' | '#' | '|' | '>'
-        )
+    /// Whether the upcoming character begins a node that could serve as a block
+    /// mapping key. `-`/`?`/`:` are structural indicators only when followed by a
+    /// separator; otherwise they begin a plain scalar (`-foo`, `?foo`, `:foo`),
+    /// which is a valid key.
+    fn can_start_simple_key(&self, c: char) -> bool {
+        match c {
+            '-' => !self.block_entry_next(),
+            '?' | ':' => !self.indicator_terminator_next(),
+            ',' | '[' | ']' | '{' | '}' | '#' | '|' | '>' => false,
+            _ => true,
+        }
     }
 
     /// Handles `:` in block context: converts a buffered simple key into a
@@ -2151,6 +2155,32 @@ mod tests {
                 TokenKind::StreamEnd,
             ]
         );
+    }
+
+    #[test]
+    fn plain_key_starting_with_indicator_char() {
+        // `-foo`, `?foo`, `:foo` (indicator + non-space) are valid plain keys.
+        assert_eq!(
+            kinds(":foo: x\n"),
+            vec![
+                TokenKind::StreamStart,
+                TokenKind::BlockMappingStart,
+                TokenKind::Key,
+                TokenKind::Scalar {
+                    value: ":foo".to_string(),
+                    style: ScalarStyle::Plain
+                },
+                TokenKind::Value,
+                TokenKind::Scalar {
+                    value: "x".to_string(),
+                    style: ScalarStyle::Plain
+                },
+                TokenKind::BlockEnd,
+                TokenKind::StreamEnd,
+            ]
+        );
+        assert!(tokenize("-foo: x\n", Limits::default()).is_ok());
+        assert!(tokenize("?foo: x\n", Limits::default()).is_ok());
     }
 
     #[test]
