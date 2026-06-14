@@ -485,7 +485,9 @@ impl<'a> Scanner<'a> {
         match c {
             '-' => !self.block_entry_next(),
             '?' | ':' => !self.indicator_terminator_next(),
-            ',' | '[' | ']' | '{' | '}' | '#' | '|' | '>' => false,
+            // `[`/`{` begin a flow collection, which may itself be a block
+            // mapping key (`[a, b]: value`).
+            ',' | ']' | '}' | '#' | '|' | '>' => false,
             _ => true,
         }
     }

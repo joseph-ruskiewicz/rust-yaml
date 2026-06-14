@@ -799,6 +799,48 @@ mod tests {
     }
 
     #[test]
+    fn flow_collection_as_block_mapping_key() {
+        // `[a, b]: value` — a flow sequence used as a block mapping key.
+        assert_eq!(
+            kinds("[a, b]: value\n"),
+            vec![
+                EventKind::StreamStart,
+                EventKind::DocumentStart,
+                EventKind::MappingStart {
+                    anchor: None,
+                    tag: None
+                },
+                EventKind::SequenceStart {
+                    anchor: None,
+                    tag: None
+                },
+                EventKind::Scalar {
+                    value: "a".to_string(),
+                    style: ScalarStyle::Plain,
+                    anchor: None,
+                    tag: None
+                },
+                EventKind::Scalar {
+                    value: "b".to_string(),
+                    style: ScalarStyle::Plain,
+                    anchor: None,
+                    tag: None
+                },
+                EventKind::SequenceEnd,
+                EventKind::Scalar {
+                    value: "value".to_string(),
+                    style: ScalarStyle::Plain,
+                    anchor: None,
+                    tag: None
+                },
+                EventKind::MappingEnd,
+                EventKind::DocumentEnd,
+                EventKind::StreamEnd,
+            ]
+        );
+    }
+
+    #[test]
     fn mapping_in_sequence_entry() {
         assert_eq!(
             kinds("- k: v\n"),
