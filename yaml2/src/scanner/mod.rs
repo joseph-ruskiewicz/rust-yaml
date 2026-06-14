@@ -1307,9 +1307,14 @@ impl<'a> Scanner<'a> {
 
         let mut content_indent: Option<usize> = explicit_indent.map(|n| {
             // `content_indent` is the number of leading spaces to strip. The
-            // indentation indicator `n` (1-9) is relative to the parent block.
-            let base = if parent < 0 { 0 } else { (parent + 1) as usize };
-            base + n
+            // indentation indicator `n` (1-9) is relative to the parent node's
+            // indentation: content sits at `parent_indent + n`. At root the
+            // parent indentation is treated as 0, so content sits at `n`.
+            if parent < 0 {
+                n
+            } else {
+                parent as usize + n
+            }
         });
 
         let mut lines: Vec<(String, bool)> = Vec::new();
@@ -1666,6 +1671,34 @@ mod tests {
         assert_eq!(
             one_scalar("|2\n  a\n    b\n"),
             ("a\n  b\n".to_string(), ScalarStyle::Literal)
+        );
+    }
+
+    #[test]
+    fn block_scalar_explicit_indent_is_relative_to_parent() {
+        // `|2` whose parent mapping is at indent 2 (inside a sequence entry):
+        // content sits at 2 + 2 = 4 spaces, not 5.
+        assert_eq!(
+            kinds("- a: |2\n    xxx\n"),
+            vec![
+                TokenKind::StreamStart,
+                TokenKind::BlockSequenceStart,
+                TokenKind::BlockEntry,
+                TokenKind::BlockMappingStart,
+                TokenKind::Key,
+                TokenKind::Scalar {
+                    value: "a".to_string(),
+                    style: ScalarStyle::Plain
+                },
+                TokenKind::Value,
+                TokenKind::Scalar {
+                    value: "xxx\n".to_string(),
+                    style: ScalarStyle::Literal
+                },
+                TokenKind::BlockEnd,
+                TokenKind::BlockEnd,
+                TokenKind::StreamEnd,
+            ]
         );
     }
 

@@ -10,7 +10,7 @@
 //!     skip-list can only shrink, never silently hide a fix.
 //!   * No case may panic, ever (panics are failures regardless of the skip-list).
 //!
-//! Current baseline: 372/402 (92.5%). The entries below are documented gaps to
+//! Current baseline: 377/402 (93.8%). The entries below are documented gaps to
 //! be driven down by follow-on work (scalar edge cases, flow-context plain
 //! scalars, indentation corner cases, etc.).
 
@@ -25,8 +25,7 @@ const KNOWN_FAILURES: &[&str] = &[
     "5LLU", "9C9N", "9KBC", "CXX2", "DK4H", "DK95/01", "G9HC", "H7J7", "QB6E", "S98Z", "VJP3/00",
     "W9L4", "Y79Y/000", "Y79Y/003", "ZXT5",
     // -- under-rejected: valid YAML we wrongly reject --
-    "2SXE", "4WA9", "58MP", "5T43", "AB8U", "CT4Q", "D83L", "DBG4", "F6MC", "LX3P", "M2N8/01",
-    "M5C3", "Q9WF", "W5VH", "Z67P",
+    "2SXE", "58MP", "5T43", "AB8U", "CT4Q", "DBG4", "LX3P", "M2N8/01", "Q9WF", "W5VH",
 ];
 
 fn data_root() -> PathBuf {
