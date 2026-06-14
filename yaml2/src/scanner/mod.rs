@@ -513,7 +513,13 @@ impl<'a> Scanner<'a> {
             loop {
                 match self.reader.peek() {
                     None | Some('\n') | Some('\r') => break,
-                    Some(',') | Some('[') | Some(']') | Some('{') | Some('}') => break 'scan,
+                    // Flow indicators terminate a plain scalar only inside a flow
+                    // collection; in block context they are ordinary characters.
+                    Some(',') | Some('[') | Some(']') | Some('{') | Some('}')
+                        if self.flow_depth > 0 =>
+                    {
+                        break 'scan
+                    }
                     Some(':') if self.indicator_terminator_next() => break 'scan,
                     Some(' ') | Some('\t') => {
                         // A space immediately before '#' starts a comment.
@@ -1977,27 +1983,37 @@ mod tests {
 
     #[test]
     fn spans_are_accurate_for_a_small_input() {
-        let toks = tokenize("a, b", Limits::default()).unwrap();
-        let scalar_a = &toks[1];
+        // A comma terminates a scalar only in flow context.
+        let toks = tokenize("[a, b]", Limits::default()).unwrap();
+        let scalar_a = &toks[2];
         assert!(matches!(&scalar_a.kind, TokenKind::Scalar { value, .. } if value == "a"));
-        assert_eq!(scalar_a.span.start, crate::error::Position::new(0, 1, 1));
-        assert_eq!(scalar_a.span.end, crate::error::Position::new(1, 1, 2));
+        assert_eq!(scalar_a.span.start, crate::error::Position::new(1, 1, 2));
+        assert_eq!(scalar_a.span.end, crate::error::Position::new(2, 1, 3));
 
-        let comma = &toks[2];
+        let comma = &toks[3];
         assert_eq!(comma.kind, TokenKind::FlowEntry);
-        assert_eq!(comma.span.start, crate::error::Position::new(1, 1, 2));
-        assert_eq!(comma.span.end, crate::error::Position::new(2, 1, 3));
+        assert_eq!(comma.span.start, crate::error::Position::new(2, 1, 3));
+        assert_eq!(comma.span.end, crate::error::Position::new(3, 1, 4));
     }
 
     #[test]
     fn plain_scalar_span_excludes_trailing_whitespace() {
-        // "a , b": scalar "a" with a trailing space before the comma.
-        let toks = tokenize("a , b", Limits::default()).unwrap();
-        let scalar_a = &toks[1];
+        // "[a , b]": scalar "a" with a trailing space before the comma.
+        let toks = tokenize("[a , b]", Limits::default()).unwrap();
+        let scalar_a = &toks[2];
         assert!(matches!(&scalar_a.kind, TokenKind::Scalar { value, .. } if value == "a"));
-        // Span must end right after 'a' (offset 1, col 2), NOT after the space.
-        assert_eq!(scalar_a.span.start, crate::error::Position::new(0, 1, 1));
-        assert_eq!(scalar_a.span.end, crate::error::Position::new(1, 1, 2));
+        // Span must end right after 'a' (col 3), NOT after the space.
+        assert_eq!(scalar_a.span.start, crate::error::Position::new(1, 1, 2));
+        assert_eq!(scalar_a.span.end, crate::error::Position::new(2, 1, 3));
+    }
+
+    #[test]
+    fn block_plain_scalar_allows_flow_indicators() {
+        // Outside flow context, `,[]{}` are ordinary plain-scalar characters.
+        assert_eq!(
+            one_scalar("a, b, c\n"),
+            ("a, b, c".to_string(), ScalarStyle::Plain)
+        );
     }
 
     #[test]
