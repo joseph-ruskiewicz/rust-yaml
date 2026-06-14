@@ -362,6 +362,10 @@ impl ParserState {
                 self.emit(EventKind::SequenceEnd, end.span);
                 return Ok(());
             }
+            // A ',' here means a leading or repeated separator with no entry.
+            if matches!(self.peek(), Some(TokenKind::FlowEntry)) {
+                return Err(self.error("unexpected ',' in flow sequence"));
+            }
             self.parse_flow_sequence_entry()?;
             match self.peek() {
                 Some(TokenKind::FlowEntry) => {
@@ -458,6 +462,10 @@ impl ParserState {
                 let end = self.bump();
                 self.emit(EventKind::MappingEnd, end.span);
                 return Ok(());
+            }
+            // A ',' here means a leading or repeated separator with no entry.
+            if matches!(self.peek(), Some(TokenKind::FlowEntry)) {
+                return Err(self.error("unexpected ',' in flow mapping"));
             }
             self.parse_flow_mapping_entry()?;
             match self.peek() {
@@ -1528,6 +1536,30 @@ mod tests {
     #[test]
     fn unexpected_document_level_token_errors_without_hanging() {
         let err = parse_events("]", &ParseOptions::default()).unwrap_err();
+        assert_eq!(err.kind(), crate::error::ErrorKind::Parse);
+    }
+
+    #[test]
+    fn flow_sequence_leading_comma_is_error() {
+        let err = parse_events("[, a]", &ParseOptions::default()).unwrap_err();
+        assert_eq!(err.kind(), crate::error::ErrorKind::Parse);
+    }
+
+    #[test]
+    fn flow_sequence_repeated_comma_is_error() {
+        let err = parse_events("[a, , b]", &ParseOptions::default()).unwrap_err();
+        assert_eq!(err.kind(), crate::error::ErrorKind::Parse);
+    }
+
+    #[test]
+    fn flow_sequence_trailing_comma_is_ok() {
+        // A single trailing comma is valid; only leading/repeated commas error.
+        assert!(parse_events("[a, b,]", &ParseOptions::default()).is_ok());
+    }
+
+    #[test]
+    fn flow_mapping_leading_comma_is_error() {
+        let err = parse_events("{, a: b}", &ParseOptions::default()).unwrap_err();
         assert_eq!(err.kind(), crate::error::ErrorKind::Parse);
     }
 }
