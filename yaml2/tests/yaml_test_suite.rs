@@ -10,7 +10,7 @@
 //!     skip-list can only shrink, never silently hide a fix.
 //!   * No case may panic, ever (panics are failures regardless of the skip-list).
 //!
-//! Current baseline: 325/402 (80.8%). The entries below are documented gaps to
+//! Current baseline: 327/402 (81.3%). The entries below are documented gaps to
 //! be driven down by follow-on work (scalar edge cases, flow-context plain
 //! scalars, indentation corner cases, etc.).
 
@@ -23,8 +23,8 @@ use std::path::{Path, PathBuf};
 const KNOWN_FAILURES: &[&str] = &[
     // -- over-accepted: malformed input we wrongly parse --
     "2G84/00", "2G84/01", "3HFZ", "5LLU", "5TRB", "5U3A", "9C9N", "9KBC", "9MQT/01", "BS4K", "CXX2",
-    "DK4H", "DK95/01", "G5U8", "G9HC", "H7J7", "KS4U", "LHL4", "QB6E", "RXY3", "S98Z", "SY6V",
-    "VJP3/00", "W9L4", "X4QW", "Y79Y/000", "Y79Y/003", "Y79Y/004", "Y79Y/005", "YJV2", "ZXT5",
+    "DK4H", "DK95/01", "G9HC", "H7J7", "KS4U", "LHL4", "QB6E", "RXY3", "S98Z", "SY6V", "VJP3/00",
+    "W9L4", "X4QW", "Y79Y/000", "Y79Y/003", "Y79Y/004", "Y79Y/005", "ZXT5",
     // -- under-rejected: valid YAML we wrongly reject --
     "2EBW", "2JQS", "2SXE", "2XXW", "35KP", "4WA9", "58MP", "5T43", "5WE3", "6CA3", "6M2F", "6PBE",
     "7W2P", "A2M4", "AB8U", "AZW3", "CT4Q", "D83L", "DBG4", "DK95/00", "F6MC", "FBC9", "GH63",

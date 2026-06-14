@@ -364,6 +364,16 @@ impl<'a> Scanner<'a> {
             '*' => self.scan_anchor_or_alias(start, false),
             '!' => self.scan_tag(start),
             '-' if self.flow_depth == 0 && self.block_entry_next() => self.fetch_block_entry(start),
+            // A lone `-` before a flow indicator is not a valid plain scalar.
+            '-' if self.flow_depth > 0
+                && matches!(self.reader.peek_nth(1), Some(',') | Some(']') | Some('}')) =>
+            {
+                Err(Error::new(
+                    ErrorKind::Scan,
+                    "'-' is not a valid plain scalar in a flow collection",
+                )
+                .with_span(Span::new(start, self.reader.position())))
+            }
             '|' if self.flow_depth == 0 => self.scan_block_scalar(true, start),
             '>' if self.flow_depth == 0 => self.scan_block_scalar(false, start),
             _ => self.scan_plain(start),
