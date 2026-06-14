@@ -852,6 +852,13 @@ impl<'a> Scanner<'a> {
                     let trimmed = value.trim_end_matches([' ', '\t']).len();
                     value.truncate(trimmed);
                     let folded = self.scan_flow_folded_breaks();
+                    if self.at_document_marker() {
+                        return Err(Error::new(
+                            ErrorKind::Scan,
+                            "a document marker may not appear inside a quoted scalar",
+                        )
+                        .with_span(Span::new(start, self.reader.position())));
+                    }
                     value.push_str(&folded);
                 }
                 Some(c) => {
@@ -860,6 +867,12 @@ impl<'a> Scanner<'a> {
                 }
             }
         }
+    }
+
+    /// True when the cursor sits at the start of a line that begins a `---` or
+    /// `...` document marker.
+    fn at_document_marker(&self) -> bool {
+        self.reader.position().column == 1 && (self.marker_ahead("---") || self.marker_ahead("..."))
     }
 
     fn scan_double_quoted(&mut self, start: Position) -> Result<Token> {
@@ -901,6 +914,13 @@ impl<'a> Scanner<'a> {
                     let trimmed = value.trim_end_matches([' ', '\t']).len();
                     value.truncate(trimmed);
                     let folded = self.scan_flow_folded_breaks();
+                    if self.at_document_marker() {
+                        return Err(Error::new(
+                            ErrorKind::Scan,
+                            "a document marker may not appear inside a quoted scalar",
+                        )
+                        .with_span(Span::new(start, self.reader.position())));
+                    }
                     value.push_str(&folded);
                 }
                 Some(c) => {
@@ -2690,6 +2710,31 @@ mod tests {
         assert_eq!(
             one_scalar("\"a\nb\""),
             ("a b".to_string(), ScalarStyle::DoubleQuoted)
+        );
+    }
+
+    #[test]
+    fn document_marker_inside_quoted_scalar_is_error() {
+        assert_eq!(
+            tokenize("\"a\n---\nb\"", Limits::default())
+                .unwrap_err()
+                .kind(),
+            crate::error::ErrorKind::Scan
+        );
+        assert_eq!(
+            tokenize("'a\n...\nb'", Limits::default())
+                .unwrap_err()
+                .kind(),
+            crate::error::ErrorKind::Scan
+        );
+    }
+
+    #[test]
+    fn indented_dots_inside_quoted_scalar_are_content() {
+        // An indented `...` is folded content, not a document marker.
+        assert_eq!(
+            one_scalar("\"a\n  ... b\""),
+            ("a ... b".to_string(), ScalarStyle::DoubleQuoted)
         );
     }
 
