@@ -1118,6 +1118,16 @@ impl<'a> Scanner<'a> {
     /// Handles a `-` block sequence entry: opens a sequence if needed, emits
     /// `BlockEntry`, and consumes the dash.
     fn fetch_block_entry(&mut self, start: Position) -> Result<Token> {
+        // A block sequence entry may only begin where a node could start a new
+        // block (line start, or after another `-`). A `-` mid-line after a `:`
+        // value or a node property (`key: - x`, `&a - x`) is invalid.
+        if !self.simple_key_allowed {
+            return Err(Error::new(
+                ErrorKind::Scan,
+                "block sequence entries are not allowed here",
+            )
+            .with_span(Span::new(start, start)));
+        }
         let col = Self::col0(start);
         self.roll_indent(col, TokenKind::BlockSequenceStart, start, None);
         self.reader.advance(); // consume '-'
@@ -2063,6 +2073,22 @@ mod tests {
     fn block_indent_helpers_unroll_to_root_at_eof() {
         let toks = tokenize("hello\n", Limits::default()).unwrap();
         assert!(!toks.iter().any(|t| t.kind == TokenKind::BlockEnd));
+    }
+
+    #[test]
+    fn block_entry_mid_line_after_value_or_property_is_error() {
+        // A `-` cannot start a block sequence after a `:` value or an anchor on
+        // the same line; it must begin where a key could (line start / after `-`).
+        for input in ["key: - a\n     - b\n", "&anchor - x\n"] {
+            assert_eq!(
+                tokenize(input, Limits::default()).unwrap_err().kind(),
+                crate::error::ErrorKind::Scan,
+                "expected scan error for {input:?}"
+            );
+        }
+        // Compact nested sequences and indentless sequences stay valid.
+        assert!(tokenize("- - a\n", Limits::default()).is_ok());
+        assert!(tokenize("key:\n- a\n", Limits::default()).is_ok());
     }
 
     #[test]
