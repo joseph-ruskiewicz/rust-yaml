@@ -153,7 +153,7 @@ impl<'a> Scanner<'a> {
             return Ok(());
         }
 
-        self.skip_to_next_token();
+        self.skip_to_next_token()?;
         self.stale_simple_key();
 
         // A `%` at column 1 in block context begins a directive line. Directives
@@ -246,16 +246,22 @@ impl<'a> Scanner<'a> {
 
     /// Skips insignificant whitespace, line breaks, and comments. In the flow
     /// subset, line breaks between tokens are not significant.
-    fn skip_to_next_token(&mut self) {
+    fn skip_to_next_token(&mut self) -> Result<()> {
+        // A comment is only valid at line start or after separating whitespace.
+        // Column 1 means the cursor sits at the start of a line (robust even
+        // after multi-line scanners that leave `at_line_start` stale).
+        let mut separated = self.reader.position().column == 1;
         loop {
             match self.reader.peek() {
                 Some(' ') => {
+                    separated = true;
                     self.reader.advance();
                 }
                 Some('\t') => {
                     if self.flow_depth == 0 && self.at_line_start {
                         self.tab_in_indent = true;
                     }
+                    separated = true;
                     self.reader.advance();
                 }
                 Some('\n') | Some('\r') => {
@@ -265,8 +271,17 @@ impl<'a> Scanner<'a> {
                     }
                     self.at_line_start = true;
                     self.tab_in_indent = false;
+                    separated = true;
                 }
                 Some('#') => {
+                    if !separated {
+                        let pos = self.reader.position();
+                        return Err(Error::new(
+                            ErrorKind::Scan,
+                            "a comment must be preceded by whitespace",
+                        )
+                        .with_span(Span::new(pos, pos)));
+                    }
                     while let Some(c) = self.reader.peek() {
                         if c == '\n' || c == '\r' {
                             break;
@@ -280,6 +295,7 @@ impl<'a> Scanner<'a> {
                 }
             }
         }
+        Ok(())
     }
 
     /// Scans a content token starting at character `c`.
