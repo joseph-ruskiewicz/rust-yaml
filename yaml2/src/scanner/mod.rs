@@ -360,7 +360,7 @@ impl<'a> Scanner<'a> {
                 Ok(self.single_char(TokenKind::FlowMappingEnd, start))
             }
             ',' => Ok(self.single_char(TokenKind::FlowEntry, start)),
-            ':' if self.flow_depth > 0 || self.indicator_terminator_next() => {
+            ':' if self.flow_depth > 0 || self.colon_block_terminator() => {
                 if self.flow_depth == 0 {
                     self.fetch_block_value(start)
                 } else {
@@ -520,7 +520,15 @@ impl<'a> Scanner<'a> {
                     {
                         break 'scan
                     }
-                    Some(':') if self.indicator_terminator_next() => break 'scan,
+                    // A `:` ends the scalar only when it is a value indicator:
+                    // in flow before a separator/flow-indicator, in block only
+                    // before whitespace/EOF.
+                    Some(':')
+                        if (self.flow_depth > 0 && self.indicator_terminator_next())
+                            || (self.flow_depth == 0 && self.colon_block_terminator()) =>
+                    {
+                        break 'scan
+                    }
                     Some(' ') | Some('\t') => {
                         // A space immediately before '#' starts a comment.
                         if self.reader.peek() == Some(' ') && self.reader.peek_nth(1) == Some('#') {
@@ -1164,6 +1172,17 @@ impl<'a> Scanner<'a> {
             TokenKind::Key,
             Span::new(start, self.reader.position()),
         ))
+    }
+
+    /// True if a `:` here is a block-context value indicator: it must be
+    /// followed by whitespace, a line break, or end-of-input. (Unlike flow
+    /// context, a following flow indicator like `,` does NOT make `:` a value
+    /// indicator — `key:,` is a plain scalar in block context.)
+    fn colon_block_terminator(&self) -> bool {
+        matches!(
+            self.reader.peek_nth(1),
+            None | Some(' ') | Some('\t') | Some('\n') | Some('\r')
+        )
     }
 
     /// True if the character after the current one is whitespace, a line break,
@@ -2013,6 +2032,26 @@ mod tests {
         assert_eq!(
             one_scalar("a, b, c\n"),
             ("a, b, c".to_string(), ScalarStyle::Plain)
+        );
+    }
+
+    #[test]
+    fn block_colon_before_flow_indicator_stays_plain() {
+        // In block context `:` is a value indicator only before whitespace/EOF,
+        // so `:,` is a plain scalar, not a value indicator.
+        assert_eq!(
+            kinds("- :,\n"),
+            vec![
+                TokenKind::StreamStart,
+                TokenKind::BlockSequenceStart,
+                TokenKind::BlockEntry,
+                TokenKind::Scalar {
+                    value: ":,".to_string(),
+                    style: ScalarStyle::Plain
+                },
+                TokenKind::BlockEnd,
+                TokenKind::StreamEnd,
+            ]
         );
     }
 
